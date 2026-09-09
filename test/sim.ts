@@ -20,7 +20,7 @@
 import { rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import {
-  LaapKernel,
+  createKernel,
   silentLogger,
   ConsciousnessEngine,
   MetacognitiveMonitor,
@@ -42,14 +42,12 @@ const DB = `${tmpdir()}/laap-sim-zvec-v3`
 rmSync(DB, { recursive: true, force: true })
 rmSync(statePath(DB), { force: true })
 
-// 直接构造内核：关后台心跳（heartbeatMs:0）保证确定性；缩短蒸馏周期以跑到自动自传；静默日志
-const kernel = new LaapKernel({
-  dbPath: DB,
-  heartbeatMs: 0,
-  consolidateEvery: 6,
-  noveltyThreshold: 0.45,
-  logger: silentLogger,
-})
+// 通过平台适配器工厂构造内核：Node 默认适配器（console/全局定时器/zvec）+ 静默日志；
+// 关后台心跳（heartbeatMs:0）保证确定性；缩短蒸馏周期以跑到自动自传
+const kernel = createKernel(
+  { logger: silentLogger },
+  { dbPath: DB, heartbeatMs: 0, consolidateEvery: 6, noveltyThreshold: 0.45 },
+)
 const { engine, monitor, memory } = kernel
 
 function perceive(e: CognitiveEvent) {

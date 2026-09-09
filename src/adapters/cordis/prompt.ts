@@ -9,7 +9,7 @@
  *     在会话日志中回放可见 —— 满足「必须经 Session Event 注入」的要求）。
  */
 import type { Context } from '@deepseek-ai/cordis'
-import { frameToNarrative } from './core/consciousness/bus.ts'
+import { frameToNarrative } from '../../core/consciousness/bus.ts'
 
 export const name = 'laap-prompt'
 export const inject = ['laap', 'systemPrompt']

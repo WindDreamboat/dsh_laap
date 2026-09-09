@@ -7,7 +7,7 @@
  * 本类**不依赖任何宿主框架**：所需的宿主能力全部通过构造函数依赖注入
  * （见 ports.ts）——日志 KernelLogger、调度 KernelScheduler、记忆 MemoryPort、
  * 嵌入 EmbedAsyncFn。缺省实现为 console / 全局定时器 / zvec MemoryLayer /
- * 哈希嵌入，因此脱离 dsh 也能独立运行与测试；dsh 侧由 src/service.ts 适配注入。
+ * 哈希嵌入，因此脱离 dsh 也能独立运行与测试；dsh 侧由 src/adapters/cordis/ 适配注入。
  */
 import { ConsciousnessEngine } from './consciousness/state.ts'
 import { CognitiveBus, frameToNarrative } from './consciousness/bus.ts'
@@ -16,7 +16,7 @@ import { MemoryLayer, type MemoryKind } from './memory/store.ts'
 import { HASH_DIM, hashEmbed, type EmbedAsyncFn } from './memory/embed.ts'
 import { captureConsciousness, loadConsciousness, restoreConsciousness, saveConsciousness } from './consciousness/persist.ts'
 import type { CognitiveEvent, ConsciousnessFrame, NeedsVector } from './consciousness/types.ts'
-import { consoleLogger, defaultScheduler, type KernelLogger, type KernelScheduler, type MemoryPort } from './ports.ts'
+import { consoleLogger, defaultScheduler, type KernelLogger, type KernelScheduler, type MemoryPort, type PlatformAdapter } from './ports.ts'
 
 export interface LaapKernelOptions {
   /** 意识快照落盘目录（与 zvec 库同树；必须本地文件系统） */
@@ -43,6 +43,17 @@ export interface LaapKernelOptions {
   logger?: KernelLogger
   /** 调度端口（默认全局 setInterval） */
   scheduler?: KernelScheduler
+}
+
+/**
+ * 平台适配工厂：宿主实现一次 PlatformAdapter（logger/scheduler/memory 任意子集），
+ * 与内核配置组装成框架无关内核。适配器字段优先于 opts 同名字段。
+ *
+ * Node/任意 JS 运行时的「默认适配器」即空对象：consoleLogger + defaultScheduler
+ * + zvec MemoryLayer（hash 嵌入），所以独立宿主最小接入只需 createKernel({}, { dbPath })。
+ */
+export function createKernel(adapter: PlatformAdapter, opts: LaapKernelOptions): LaapKernel {
+  return new LaapKernel({ ...opts, ...adapter })
 }
 
 export class LaapKernel {

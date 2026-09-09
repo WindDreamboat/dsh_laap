@@ -3,16 +3,16 @@
   "version": "0.1.0",
   "description": "LAAP 意识认知架构的 DeepSeek Harness 插件：五维意识动力学 + PSI 需求驱动 + 元认知监控 + zvec 向量记忆",
   "type": "module",
-  "main": "./src/index.ts",
+  "main": "./src/adapters/cordis/index.ts",
   "exports": {
     ".": {
-      "default": "./src/index.ts"
+      "default": "./src/adapters/cordis/index.ts"
     },
     "./core": {
       "default": "./src/core/index.ts"
     },
     "./client": {
-      "types": "./src/ui-client.tsx",
+      "types": "./src/adapters/cordis/ui-client.tsx",
       "default": "./lib/client.js"
     },
     "./package.json": "./package.json"

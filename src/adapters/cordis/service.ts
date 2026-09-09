@@ -13,7 +13,7 @@
  * 本类只接收已解析好的 LaapKernelOptions。
  */
 import { Context, Service } from '@deepseek-ai/cordis'
-import { LaapKernel, type LaapKernelOptions } from './core/kernel.ts'
+import { LaapKernel, type LaapKernelOptions } from '../../core/kernel.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {

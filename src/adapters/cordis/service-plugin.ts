@@ -5,7 +5,7 @@
  * 供 laap-tools / laap-hooks / laap-prompt 及任何第三方插件 inject 使用。
  *
  * 配置优先级：环境变量（dsh 宿主自动加载启动目录与 ~/.dsh 下的 .env）
- *   > cordis.patch.yml 的 config 字段（Schema 校验，见 src/config.ts）> 内置默认值。
+ *   > cordis.patch.yml 的 config 字段（Schema 校验，见 src/adapters/cordis/config.ts）> 内置默认值。
  * 支持的环境变量：LAAP_ZVEC_PATH / LAAP_SENSITIVITY / LAAP_HEARTBEAT_MS /
  *   LAAP_NOVELTY_THRESHOLD / LAAP_EMBED_PROVIDER / LAAP_EMBED_BASE_URL /
  *   LAAP_EMBED_MODEL / LAAP_EMBED_DIMENSION / LAAP_EMBED_API_KEY_ENV。
@@ -15,7 +15,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { homedir } from 'node:os'
 import { LaapConfigSpec, type LaapPluginConfig } from './config.ts'
 import { LaapService } from './service.ts'
-import { HASH_DIM, hashEmbed, openaiEmbed, type EmbedAsyncFn } from './core/memory/embed.ts'
+import { HASH_DIM, hashEmbed, openaiEmbed, type EmbedAsyncFn } from '../../core/memory/embed.ts'
 
 export const name = 'laap-service'
 export const Config = LaapConfigSpec

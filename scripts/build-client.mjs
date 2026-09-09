@@ -45,7 +45,7 @@ const EXTERNAL = [
 ]
 
 const result = await esbuild.build({
-  entryPoints: [resolve(root, 'src/ui-client.tsx')],
+  entryPoints: [resolve(root, 'src/adapters/cordis/ui-client.tsx')],
   bundle: true,
   platform: 'browser',
   format: 'cjs',

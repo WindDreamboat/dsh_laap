@@ -8,7 +8,7 @@
 import { Context } from '@deepseek-ai/cordis'
 import { rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import * as laapService from '../src/service-plugin.ts'
+import * as laapService from '../src/adapters/cordis/service-plugin.ts'
 import {
   frameToNarrative,
   loadConsciousness,
