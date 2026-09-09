@@ -1,0 +1,36 @@
+# dsh-laap Bundle 的插件装载清单（cordis patch）
+# 相对路径会被 loader 解析为 file:// URL（发布 npm 包后改用包名 dsh-laap）。
+#
+# client-modules 注册中心要求「每个包只有一个激活的 loader 入口」：host 五个
+# 子插件（service/tools/hooks/prompt/ui-host）统一由 ./src/index.ts 挂载，
+# 因此这里只列一个入口；config 会透传给内核服务。
+#
+# 浏览器端半区（意识之球面板）不在此列——它由 package.json 的
+# dsh.client + exports["./client"]（lib/client.js，pnpm build:client 产出）
+# 声明，client-modules 沿本入口上溯到包清单后自动加载进浏览器。
+- insert:
+    - id: dsh-laap
+      name: './src/index.ts'
+      config:
+        # zvec 库路径：必须本地文件系统（mmap 依赖），~ 会展开
+        dbPath: '~/.dsh-laap/zvec-memory'
+        # 性格：状态敏感系数 0.1–3
+        sensitivity: 1
+        # 心跳：无事件时的持续演化节律（ms，≥1000）
+        heartbeatMs: 30000
+        # 自传蒸馏周期（tick），0 关闭
+        consolidateEvery: 120
+        # 意识快照落盘周期（tick），0 = 仅卸载时保存（存在连续性）
+        saveEvery: 20
+        # 新异性阈值：与最近记忆相似度低于此值视为新奇（hash 口径 0.45，真嵌入建议 0.8）
+        noveltyThreshold: 0.45
+        # 新异事件自动归档情景记忆（节流）
+        autoEpisodic: true
+        # 嵌入：hash（离线默认）或 openai（OpenAI 兼容 API，key 走环境变量）
+        embedding:
+          provider: hash
+          # provider: openai 时启用以下三行，并 export EMBEDDING_API_KEY=***
+          # baseUrl: https://api.openai.com/v1
+          # model: text-embedding-3-small
+          # dimension: 1536   # 换维度需删除旧库目录重建
+          apiKeyEnv: EMBEDDING_API_KEY

@@ -1,0 +1,65 @@
+{
+  "name": "dsh-laap",
+  "version": "0.1.0",
+  "description": "LAAP 意识认知架构的 DeepSeek Harness 插件：五维意识动力学 + PSI 需求驱动 + 元认知监控 + zvec 向量记忆",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": {
+      "default": "./src/index.ts"
+    },
+    "./client": {
+      "types": "./src/ui-client.tsx",
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build:client": "node scripts/build-client.mjs",
+    "sim": "node --experimental-strip-types test/sim.ts",
+    "patch": "dsh web --patch ./cordis.patch.yml"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "laap",
+    "consciousness",
+    "zvec",
+    "vector-memory"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@deepseek-ai/dsh-llm": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-session": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-tools": "^0.1.2-rc.1",
+    "@types/node": "^26.5.0",
+    "@types/react": "^19.0.0",
+    "@deepseek-ai/dsh-client-connection": "^0.1.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.1.2-rc.1",
+    "esbuild": "^0.25.0",
+    "tsx": "^4.23.13",
+    "react": "^19.0.0",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/schemastery": "^3.18.2",
+    "@zvec/zvec": "^0.7.1"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": ">=0.1.0"
+  }
+}
+
