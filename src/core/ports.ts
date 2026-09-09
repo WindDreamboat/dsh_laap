@@ -35,6 +35,8 @@ export interface MemoryPort {
   remember(doc: MemoryDoc): Promise<{ id: string; deduplicated?: string }>
   recall(query: string, opts?: { topk?: number; kind?: MemoryKind }): Promise<RecallResult[]>
   listSkills(limit?: number): MemoryDoc[]
+  /** 删除一条长期记忆（技能合并更新用） */
+  forget(id: string): void
   pushWorking(item: string, archiveTo?: { id: string; ts: number }): void
   getWorking(): string[]
   close(): void

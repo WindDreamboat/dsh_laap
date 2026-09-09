@@ -110,8 +110,14 @@ export function apply(ctx: Context) {
     async execute(args) {
       if (args.action === 'learn') {
         if (!args.name || !args.howto) return { narrative: 'learn 需要 name 与 howto 两个参数' }
-        await ctx.laap.learnSkill(args.name, args.howto)
-        return { narrative: `技能「${args.name}」已写入程序记忆，之后可用 laap_recall(kind=procedural) 联想调用。` }
+        const r = await ctx.laap.learnSkill(args.name, args.howto)
+        if (r.action === 'created') {
+          return { narrative: `技能「${r.name}」已写入程序记忆（${r.steps ?? 0} 条要点），之后可用 laap_recall(kind=procedural) 联想调用。` }
+        }
+        if (r.action === 'updated') {
+          return { narrative: `技能「${r.name}」与已有技能重复，已把新要点合并进去（现共 ${r.steps ?? 0} 条），程序记忆未产生重复条目。` }
+        }
+        return { narrative: `技能「${r.name}」与已有技能内容一致，未重复写入（仍为 ${r.steps ?? 0} 条要点）。` }
       }
       const skills = ctx.laap.memory.listSkills()
       return {

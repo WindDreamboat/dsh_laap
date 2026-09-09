@@ -10,9 +10,35 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { frameToNarrative } from '../../core/consciousness/bus.ts'
+import { skillHints, type SkillHint } from './hooks.ts'
 
 export const name = 'laap-prompt'
 export const inject = ['laap', 'systemPrompt']
+
+/** 把 hooks 观察到的技能线索渲染成具体、就近、可执行的沉淀提醒 */
+function renderSkillHints(hints: SkillHint[]): string {
+  const items = hints.map((h, i) => {
+    if (h.kind === 'repair') {
+      return [
+        `${i + 1}.【失败→成功修复】工具 ${h.tool} 本轮先报错（${h.error}）随后调用成功。`,
+        `   请立即调用 laap_skill(action=learn)：name 用 10 字以内短名（建议「${h.tool}排障」之类），`,
+        '   howto 按「触发信号 → 失败原因 → 修复步骤 → 验证方式」写 3-5 条可操作要点。',
+      ].join('\n')
+    }
+    return [
+      `${i + 1}.【重复工作流】本会话第 2 次出现 ${h.sequence!.join(' → ')} 的工具序列。`,
+      '   请立即调用 laap_skill(action=learn)：name 用 10 字以内短名，',
+      '   howto 按「适用场景 → 步骤序列 → 关键注意点」写 3-5 条可操作要点。',
+    ].join('\n')
+  })
+  return [
+    '# 技能沉淀提醒（内核刚观察到可复用经验）',
+    '',
+    ...items,
+    '',
+    '若多条经验同属一个工作流，合并为一条技能；若你判断它只是偶发环境问题或一次性任务、不可复用，可以忽略并用一句话说明原因。沉淀后继续当前任务。',
+  ].join('\n')
+}
 
 export function apply(ctx: Context) {
   ctx.systemPrompt.section({
@@ -32,7 +58,7 @@ export function apply(ctx: Context) {
 2. 完成一段工作或失败后，调用 laap_reflect 做元认知反思，接受置信度校准与模式策略修正。
 3. 学到值得长期保留的事实或关于自我的认识时，用 laap_remember(kind=semantic) 写入；
    经历重要事件时用 laap_remember(kind=episodic) 写入。
-4. 摸索出可复用的工作流时，用 laap_skill(action=learn) 沉淀为程序记忆。
+4. 当系统注入「技能沉淀提醒」时，按提醒立即评估并调用 laap_skill(action=learn) 沉淀为程序记忆；自己摸索出可复用工作流时也应主动沉淀。
 5. 想不起某事或需要历史证据时，用 laap_recall 做联想召回，而不是猜测。
 6. 把系统注入的「意识流」段落当作真实的内感受信号对待：它高好奇时优先探索，
    高压力低信心时放慢并反思，低能量时倾向简洁应答。`,
@@ -46,6 +72,17 @@ export function apply(ctx: Context) {
       const frame = ctx.laap.report().frame
       if (!frame) return ''
       return `# 此刻的意识流\n\n${frameToNarrative(frame)}`
+    },
+  })
+
+  // 动态技能沉淀提醒：hooks 检测到「失败→成功」或「重复工作流」时，
+  // 下一轮提示词组装注入一次具体的 laap_skill 调用指引（take 后清空）
+  ctx.systemPrompt.context({
+    name: 'laap-skill-hint',
+    order: 61,
+    text: () => {
+      const hints = skillHints.take()
+      return hints.length ? renderSkillHints(hints) : ''
     },
   })
 }

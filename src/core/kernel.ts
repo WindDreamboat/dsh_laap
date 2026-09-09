@@ -242,17 +242,71 @@ export class LaapKernel {
     }).catch((err) => this.log.warn(`自传蒸馏写入失败: ${String(err).slice(0, 120)}`))
   }
 
-  /** 学习一项可复用技能（程序记忆）。zvec 的 doc id 仅限 ASCII 安全字符，故用名称哈希 */
-  learnSkill(name: string, howto: string): Promise<{ id: string; deduplicated?: string }> {
+  /**
+   * 学习一项可复用技能（程序记忆）。zvec 的 doc id 仅限 ASCII 安全字符，故用名称哈希。
+   *
+   * 生命周期（Memp/Voyager 经验）：程序性记忆必须去重更新，不能只增不改——
+   * 同名（归一化）或语义近乎同义改写（rawScore 超阈）的旧技能命中时，
+   * 把新旧 howto 要点按行合并（旧要点在前、新要点去重追加）后替换旧文，
+   * 技能总数不膨胀；内容无新增时不产生写入。
+   */
+  async learnSkill(
+    name: string,
+    howto: string,
+  ): Promise<{ id: string; name: string; action: 'created' | 'updated' | 'unchanged'; previousId?: string; steps?: number }> {
+    const trimmedName = name.trim()
+    const newLines = howtoLines(howto)
+
+    // ① 同名命中（内存索引，零嵌入成本，主路径）
+    let existing = this.findSkillByName(trimmedName)
+    // ② 语义近重复（近似改写时兜底；阈值偏严，宁可不合并也不误并不同技能）
+    if (!existing && newLines.length > 0) {
+      const hits = await this.memory.recall(`${trimmedName}：${howto}`, { kind: 'procedural' as MemoryKind, topk: 3 })
+      const near = hits.find((h) => h.rawScore >= SKILL_DUP_RAW)
+      if (near) existing = { id: near.id, text: near.text }
+    }
+
+    if (existing) {
+      const parsed = parseSkillText(existing.text)
+      const oldLines = parsed ? howtoLines(parsed.howto) : []
+      const seen = new Set(oldLines.map(normStep))
+      const additions = newLines.filter((l) => !seen.has(normStep(l)))
+      if (additions.length === 0) {
+        return { id: existing.id, name: trimmedName, action: 'unchanged', steps: oldLines.length }
+      }
+      const merged = [...oldLines, ...additions].slice(0, MAX_SKILL_STEPS)
+      this.memory.forget(existing.id)
+      const saved = await this.writeSkill(trimmedName, formatHowto(merged))
+      return { ...saved, action: 'updated', previousId: existing.id, steps: merged.length }
+    }
+
+    const saved = await this.writeSkill(trimmedName, formatHowto(newLines))
+    return { ...saved, action: 'created', steps: newLines.length }
+  }
+
+  /** 写入一条技能文档（id 为名称哈希 + 时间戳，ASCII 安全） */
+  private writeSkill(name: string, body: string): Promise<{ id: string; name: string }> {
     let h = 0x811c9dc5
     for (let i = 0; i < name.length; i++) { h ^= name.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0 }
-    return this.memory.remember({
-      id: `skill-${h.toString(16)}-${Date.now()}`,
-      kind: 'procedural',
-      text: `技能「${name}」：${howto}`,
-      ts: Date.now(),
-      salience: 0.9,
-    })
+    return this.memory
+      .remember({
+        id: `skill-${h.toString(16)}-${Date.now()}`,
+        kind: 'procedural',
+        text: `技能「${name}」：${body}`,
+        ts: Date.now(),
+        salience: 0.9,
+      })
+      .then(({ id }) => ({ id, name }))
+  }
+
+  /** 在技能内存索引中按归一化名称查找 */
+  private findSkillByName(name: string): { id: string; text: string } | undefined {
+    const target = normSkillName(name)
+    for (const s of this.memory.listSkills(100)) {
+      const parsed = parseSkillText(s.text)
+      if (parsed && normSkillName(parsed.name) === target) return { id: s.id, text: s.text }
+    }
+    return undefined
   }
 
   /** 按当前情境检索适用技能 */
@@ -338,4 +392,41 @@ export class LaapKernel {
       restoredFrom: this.restoredFrom,
     }
   }
+}
+
+/** 程序性记忆语义去重阈值（真嵌入口径：仅近乎同义改写命中；同名归一化是主路径） */
+const SKILL_DUP_RAW = 0.9
+/** 单条技能合并后的要点上限，防止无限增长 */
+const MAX_SKILL_STEPS = 12
+
+const SKILL_TEXT_RE = /^技能「([\s\S]+?)」[：:]([\s\S]*)$/
+
+/** 解析技能文档文本：技能「名称」：howto */
+function parseSkillText(text: string): { name: string; howto: string } | null {
+  const m = SKILL_TEXT_RE.exec(text.trim())
+  return m ? { name: m[1].trim(), howto: m[2].trim() } : null
+}
+
+/** 名称归一化：去空白与常见标点、转小写，容忍「vitest 断言修复」类微差 */
+function normSkillName(s: string): string {
+  return s.toLowerCase().replace(/[\s「」『』【】[\]（）()·:：,，.。!！?？'""`]/g, '')
+}
+
+/** 把 howto 拆成去序号的要点行（多行按换行；单行容忍中文分号列举） */
+function howtoLines(howto: string): string[] {
+  const raw = howto.includes('\n') ? howto.split(/\r?\n/) : howto.split(/[；;]/)
+  return raw
+    .map((l) => l.trim().replace(/^\d+\s*[.、):：]\s*/, '').replace(/^[-*·]\s+/, '').trim())
+    .filter(Boolean)
+}
+
+/** 要点行归一化（合并去重键）：忽略空白、标点与序号差异 */
+function normStep(s: string): string {
+  return s.toLowerCase().replace(/[\s，。、,.!！?？；;：:「」『』【】[\]（）()'""`]/g, '')
+}
+
+/** 多行要点重新编号；单要点保持单行 */
+function formatHowto(lines: string[]): string {
+  if (lines.length <= 1) return lines[0] ?? ''
+  return lines.map((l, i) => `${i + 1}. ${l}`).join('\n')
 }

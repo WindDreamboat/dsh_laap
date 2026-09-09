@@ -20,7 +20,69 @@ function extractText(data: any): string {
   return ''
 }
 
+/**
+ * 技能沉淀线索队列（一期：确定性触发 + 模型执笔）
+ *
+ * 研究依据（Voyager/ExpeL）：学习动作必须由主循环确定性触发，不能依赖模型
+ * 自觉；而技能文本必须由模型写（内核只有工具名/错误串，没有任务语义）。
+ * hooks 负责判定「何时值得学」，把线索排队；prompt 在下一轮提示词组装时
+ * take() 走并渲染成具体的 laap_skill 调用提醒。纯适配器层进程内状态，
+ * 不入内核、不持久化（flush 即随会话清空）。
+ */
+export type SkillHintKind = 'repair' | 'repeat'
+export interface SkillHint {
+  kind: SkillHintKind
+  /** 会话内去重键 */
+  key: string
+  ts: number
+  /** repair：先失败后成功的工具名 */
+  tool?: string
+  /** repair：首次失败的错误片段 */
+  error?: string
+  /** repeat：重复出现的有序工具序列 */
+  sequence?: string[]
+}
+
+const HINT_TTL_MS = 30 * 60 * 1000
+const MAX_PENDING = 3
+
+class SkillHintQueue {
+  private pending: SkillHint[] = []
+  private sessionKeys = new Set<string>()
+
+  /** 同一会话内同一 key 只入队一次；返回是否实际入队 */
+  push(hint: Omit<SkillHint, 'ts'>): boolean {
+    if (this.sessionKeys.has(hint.key)) return false
+    this.sessionKeys.add(hint.key)
+    this.pending.push({ ...hint, ts: Date.now() })
+    if (this.pending.length > MAX_PENDING) this.pending.shift()
+    return true
+  }
+
+  /** 下一轮提示词组装时一次性取走（durable 快照物化后进入会话日志，无需保留） */
+  take(): SkillHint[] {
+    const now = Date.now()
+    this.pending = this.pending.filter((h) => now - h.ts < HINT_TTL_MS)
+    const out = this.pending
+    this.pending = []
+    return out
+  }
+
+  /** 会话 flush（compaction/退出）时重置：允许新会话再次提示同类经验 */
+  resetSession(): void {
+    this.pending = []
+    this.sessionKeys.clear()
+  }
+}
+
+export const skillHints = new SkillHintQueue()
+
 export function apply(ctx: Context) {
+  // 本轮（turn）内的工具行为轨迹，turn/start 重置
+  let turnFailures = new Map<string, string>()   // 工具名 → 首次错误片段
+  let turnSuccessSeq: string[] = []               // 成功工具调用序列
+  let turnBigrams = new Map<string, number>()     // 相邻工具对 → 本轮出现次数
+
   // 用户消息：最强的社会性刺激（归属感通道）
   ctx.on('session/event', (session, event) => {
     switch (event.type) {
@@ -35,6 +97,9 @@ export function apply(ctx: Context) {
         break
       }
       case 'turn/start': {
+        turnFailures = new Map()
+        turnSuccessSeq = []
+        turnBigrams = new Map()
         ctx.laap.perceive({ type: 'task_start', description: extractText((event as any).data) || '新一轮任务' })
         break
       }
@@ -49,6 +114,7 @@ export function apply(ctx: Context) {
   // 会话 flush（含 compaction / 退出前的持久化时机）：意识快照随之落盘
   ctx.on('session/flush', () => {
     ctx.laap.saveNow()
+    skillHints.resetSession()
   })
 
   // 行动反馈：工具执行结局直接进入状态动力学
@@ -66,6 +132,34 @@ export function apply(ctx: Context) {
       { thought: `工具 ${exec.name}`, outcome: failed ? 'failure' : 'success', confidence: 0.5 },
       ctx.laap.engine.snapshot().tick,
     )
+
+    // ── 技能沉淀线索检测（只观察、不写库；写入由下一轮模型自己调 laap_skill）──
+    if (failed) {
+      if (!turnFailures.has(exec.name)) {
+        turnFailures.set(
+          exec.name,
+          String((result as any)?.error ?? (result as any)?.message ?? '执行失败').replace(/\s+/g, ' ').slice(0, 120),
+        )
+      }
+    } else {
+      // 线索一（ExpeL 式失败→成功对比）：同一工具本轮先失败后成功
+      const firstError = turnFailures.get(exec.name)
+      if (firstError) {
+        turnFailures.delete(exec.name)
+        skillHints.push({ kind: 'repair', key: `repair:${exec.name}`, tool: exec.name, error: firstError })
+      }
+      // 线索二（复用证据）：同一相邻工具对在本轮第 2 次出现（程序性技能需重复）
+      const prev = turnSuccessSeq[turnSuccessSeq.length - 1]
+      turnSuccessSeq.push(exec.name)
+      if (prev) {
+        const pairKey = `${prev}\u2192${exec.name}`
+        const n = (turnBigrams.get(pairKey) ?? 0) + 1
+        turnBigrams.set(pairKey, n)
+        if (n === 2) {
+          skillHints.push({ kind: 'repeat', key: `repeat:${pairKey}`, sequence: [prev, exec.name] })
+        }
+      }
+    }
   })
 }
 

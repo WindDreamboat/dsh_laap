@@ -121,6 +121,12 @@ export class MemoryLayer implements MemoryPort {
     return [...this.skills.values()].sort((a, b) => b.ts - a.ts).slice(0, limit)
   }
 
+  /** 删除一条长期记忆（技能更新时先删旧文再写合并文）；文档不存在时静默 */
+  forget(id: string): void {
+    try { this.col.deleteSync(id) } catch { /* 可能已被并发删除 */ }
+    this.skills.delete(id)
+  }
+
   /** 启动重建：从 zvec 遍历 procedural 文档回填技能索引 */
   private reloadSkills(): void {
     try {
