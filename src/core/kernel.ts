@@ -230,10 +230,12 @@ export class LaapKernel {
   private finalizeFrame(frame: ConsciousnessFrame): ConsciousnessFrame {
     const [mode, overridden] = this.monitor.policyAdjust(frame.mode)
     if (overridden) frame.mode = mode
-    this.frameLog.push(frame)
-    if (this.frameLog.length > this.frameLogCap) this.frameLog.shift()
     if (frame.mode !== 'intuitive') this.lastModeUsed = frame.mode
+    // GWT 语义：无信号竞争胜出（如空闲心跳低语未过阈值）就没有意识内容，
+    // 不进意识流时间线，只留下动力学演化与周期蒸馏
     if (frame.broadcast.length > 0) {
+      this.frameLog.push(frame)
+      if (this.frameLog.length > this.frameLogCap) this.frameLog.shift()
       this.memory.pushWorking(frameToNarrative(frame), {
         id: `frame-${frame.tick}-${Date.now()}`,
         ts: Date.now(),
@@ -379,6 +381,8 @@ export class LaapKernel {
       drives: this.engine.dominantDrive(),
       emotion: this.engine.emotion(),
       mood: this.engine.mood(),
+      /** 经历帧数（真实刺激计数，不含 idle 心跳；state.tick 是含心跳的意识时钟） */
+      eventTick: this.engine.eventTick,
       idleSeconds: Math.max(0, (Date.now() - this.lastActivityAt) / 1000),
       monitor: this.monitor.summary(),
       modeStats: this.monitor.modeEfficacy(),
@@ -390,7 +394,7 @@ export class LaapKernel {
         mode: f.mode,
         qualia: f.qualia,
         salience: f.broadcast[0]?.salience ?? 0,
-        at: f.broadcast[0]?.at ?? 0,
+        at: f.at,
       })),
     }
   }

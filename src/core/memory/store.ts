@@ -154,7 +154,10 @@ export class MemoryLayer implements MemoryPort {
     if (this.working.length > this.workingCap) {
       const dropped = this.working.shift()!
       if (archiveTo) {
+        // fire-and-forget 沉淀：必须吞掉 reject（内核 dispose/close 后
+        // in-flight 写入会失败，未捕获时成为 unhandledRejection 拖垮进程退出码）
         void this.remember({ id: archiveTo.id, kind: 'episodic', text: dropped, ts: archiveTo.ts, salience: 0.3 })
+          .catch(() => { /* 沉淀失败不影响主流程 */ })
       }
     }
   }

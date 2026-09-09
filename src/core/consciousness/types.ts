@@ -73,6 +73,8 @@ export interface SalientSignal {
 export interface ConsciousnessFrame {
   /** 帧序号，单调递增 */
   tick: number
+  /** 帧定稿时刻（Date.now()，由总线广播时加盖） */
+  at: number
   /** 竞争胜出的信号（按显著性降序） */
   broadcast: SalientSignal[]
   /** 广播时刻的意识状态快照 */

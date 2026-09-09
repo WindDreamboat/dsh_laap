@@ -115,7 +115,12 @@ export class ConsciousnessEngine {
   private prevNeeds: NeedsVector = { ...NEEDS_TARGET }
   /** 心境水平：情绪脉冲的 EMA（衰减回 0），对外经 mood() 分类 */
   private moodLevel = 0
+  /** 意识时钟：每个积分步（含 idle 心跳）+1，存在连续性的载体 */
   private tickCount = 0
+  /** 经历帧计数：只统计真实刺激（非 idle 心跳），对应用户可感知的「意识时刻」 */
+  private eventTickCount = 0
+  /** 最近一次真实刺激所在 tick（selectMode 判定待机用；负值 = 启动后尚无刺激） */
+  private lastEventTick = -10
   private cfg: EngineConfig
 
   constructor(cfg: Partial<EngineConfig> = {}) {
@@ -138,6 +143,10 @@ export class ConsciousnessEngine {
       this.needs[key] = 0.8 * this.needs[key] + 0.2 * target
     }
     this.integrate(event.type === 'idle')
+    if (event.type !== 'idle') {
+      this.eventTickCount++
+      this.lastEventTick = this.tickCount
+    }
   }
 
   /** 空转一步：仅做向基线的恢复演化（由后台定时器驱动） */
@@ -228,6 +237,10 @@ export class ConsciousnessEngine {
     const s = this.state
     if (s.stress > 0.5 && s.confidence < 0.55) return 'reflective'
     if (s.energy < 0.3) return 'intuitive'
+    // 无真实刺激的空闲心跳：认知系统待机（intuitive）。不能落到末尾的
+    // deliberate 兜底——否则空闲帧谎报「思考」，既污染时间线色带，又会刷掉
+    // lastModeUsed，把下一个任务结局错误归因给空闲期。
+    if (this.tickCount - this.lastEventTick >= 2 && s.curiosity < 0.6) return 'intuitive'
     if (s.curiosity > 0.6 && s.energy > 0.5) return 'exploratory'
     if (s.confidence > 0.7 && s.curiosity < 0.4) return 'deliberate'
     const dom = this.dominantDrive()
@@ -254,12 +267,18 @@ export class ConsciousnessEngine {
     return { ...this.state, tick: this.tickCount }
   }
 
+  /** 经历帧数（真实刺激计数，不含 idle 心跳；随快照持久化续接） */
+  get eventTick(): number {
+    return this.eventTickCount
+  }
+
   /** 存在连续性：从持久化快照恢复意识状态 */
-  restore(snap: { state: PsiState; needs: NeedsVector; tick: number }): void {
+  restore(snap: { state: PsiState; needs: NeedsVector; tick: number; eventTick?: number }): void {
     this.state = { ...snap.state }
     this.needs = { ...snap.needs }
     this.prevNeeds = { ...snap.needs }
     this.tickCount = snap.tick
+    this.eventTickCount = snap.eventTick ?? 0
   }
 
   needsSnapshot(): NeedsVector {

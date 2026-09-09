@@ -11,12 +11,13 @@
  */
 import type { CognitiveMode, MoodState, NeedsVector, PsiState } from './consciousness/types.ts'
 
-/** 意识帧日志条目的快照投影（时间线原料） */
+/** 意识帧日志条目的快照投影（时间线原料；只含有广播内容的帧，空闲空帧不入流） */
 export interface UiSnapshotFrame {
   tick: number
   mode: CognitiveMode
   qualia: string[]
   salience: number
+  /** 帧定稿时刻（Date.now() 毫秒时间戳） */
   at: number
 }
 
@@ -29,8 +30,10 @@ export interface UiSnapshotMonitor {
 
 /** uiSnapshot() 的完整 JSON 形状（纯数据，可结构化克隆 / 经 RPC 与 SSE 传输） */
 export interface UiSnapshot {
-  /** 五维意识状态向量 + tick */
+  /** 五维意识状态向量 + tick（tick 为含 idle 心跳的意识时钟，存在连续性用） */
   state: PsiState & { tick: number }
+  /** 经历帧数：真实刺激计数（不含 idle 心跳），对应用户可感知的「意识时刻」 */
+  eventTick: number
   /** 五维需求满足度 */
   needs: NeedsVector
   /** 归一化主导驱动 */

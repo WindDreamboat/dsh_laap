@@ -58,7 +58,12 @@ export class CognitiveBus {
         : 1.0
     // 压力高时对威胁性（action 失败）信号加权
     const stressBoost = state.stress > 0.6 && channel === 'action' ? 1.4 : 1.0
-    return Math.min(1, intensity * channelWeight * novelty * driveBoost * stressBoost)
+    const s = Math.min(1, intensity * channelWeight * novelty * driveBoost * stressBoost)
+    // 外部感知/行动反馈是意识的主输入：给予显著性地板，保证真实刺激不被
+    // 广播阈值挡在意识流外（否则短文本用户消息/工具成功帧 salience≈0.3 落选，
+    // 时间线只剩内部回灌帧与空帧）；内感受低语（idle 心跳）仍走自然竞争。
+    if (channel === 'perception' || channel === 'action') return Math.max(s, 0.55)
+    return s
   }
 
   /** 竞争广播：产出本 tick 的意识帧 */
@@ -67,6 +72,7 @@ export class CognitiveBus {
     const winner = ranked.filter((s) => s.salience >= this.cfg.threshold).slice(0, this.cfg.slots)
     const frame: ConsciousnessFrame = {
       tick: this.engine.snapshot().tick,
+      at: Date.now(),
       broadcast: winner,
       state: this.engine.snapshot(),
       dominantDrive: this.engine.dominantDrive() as DriveVector,

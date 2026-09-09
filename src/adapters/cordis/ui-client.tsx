@@ -45,7 +45,7 @@ export const inject = ['slots']
 type Snap = UiSnapshot
 
 const DIMENSIONS = ['stress', 'confidence', 'curiosity', 'relatedness', 'energy'] as const
-const DIM_LABEL: Record<string, string> = { stress: '压', confidence: '信', curiosity: '奇', relatedness: '连', energy: '能' }
+const DIM_LABEL: Record<string, string> = { stress: '压力', confidence: '信心', curiosity: '好奇', relatedness: '连接', energy: '能量' }
 const DIM_COLOR: Record<string, string> = {
   stress: '#e05d5d', confidence: '#4fae6d', curiosity: '#e0a13d', relatedness: '#5d8fe0', energy: '#9a6de0',
 }
@@ -301,8 +301,8 @@ function useFixedDrag<T extends HTMLElement>(key: string, size: { w: number; h: 
 }
 
 /** ── 五维雷达图（SVG）─────────────────────────────────────────── */
-function Radar({ s }: { s: Snap['state'] }) {
-  const cx = 60, cy = 62, R = 44
+function Radar({ s, eventTick }: { s: Snap['state']; eventTick: number }) {
+  const cx = 60, cy = 62, R = 36
   const pt = (i: number, r: number) => {
     const a = (Math.PI * 2 * i) / 5 - Math.PI / 2
     return [cx + Math.cos(a) * R * r, cy + Math.sin(a) * R * r] as const
@@ -315,15 +315,16 @@ function Radar({ s }: { s: Snap['state'] }) {
         <polygon key={r} points={ring(r)} fill="none" stroke="#8883" strokeWidth="1" />
       ))}
       {DIMENSIONS.map((d, i) => {
-        const [x, y] = pt(i, 0.62)
-        return <text key={d} x={x} y={y + 4} fontSize="11" textAnchor="middle" fill={DIM_COLOR[d]}>{DIM_LABEL[d]}</text>
+        // 双字标签放最外环外侧（1.25R），不与数据多边形/网格重叠
+        const [x, y] = pt(i, 1.25)
+        return <text key={d} x={x} y={y + 4} fontSize="10" textAnchor="middle" fill={DIM_COLOR[d]}>{DIM_LABEL[d]}</text>
       })}
       <polygon points={shape} fill="#4f9dae33" stroke="#4f9dae" strokeWidth="1.5" />
       {DIMENSIONS.map((d, i) => {
         const [x, y] = pt(i, Math.max(0.08, s[d]))
         return <circle key={d} cx={x} cy={y} r="2.6" fill={DIM_COLOR[d]} />
       })}
-      <text x={cx} y={118} fontSize="10" textAnchor="middle" fill="#999">帧 {s.tick}</text>
+      <text x={cx} y={118} fontSize="10" textAnchor="middle" fill="#999">经历 {eventTick} 帧</text>
     </svg>
   )
 }
@@ -342,7 +343,7 @@ function Timeline({ frames }: { frames: Snap['frameLog'] }) {
         {recent.length === 0 && <div style={{ fontSize: 11, color: '#777' }}>（尚无广播帧）</div>}
       </div>
       {recent.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6, fontSize: 10 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: 4, marginTop: 6, fontSize: 10 }}>
           {(Object.entries(MODE_COLOR) as [CognitiveMode, string][]).map(([m, c]) => (
             <span key={m} style={{ color: '#aaa' }}><span style={{ color: c }}>■</span>{MODE_LABEL[m]}</span>
           ))}
@@ -377,11 +378,11 @@ function RadarWindow({ onPet, onClose }: { onPet: () => void; onClose: () => voi
       ) : (
         <>
           <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-            <Radar s={snap.state} />
+            <Radar s={snap.state} eventTick={snap.eventTick} />
             <div style={{ flex: 1, fontSize: 11, color: '#bbb' }}>
               {DIMENSIONS.map((d) => (
                 <div key={d} style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 3 }}>
-                  <span style={{ width: 14, color: DIM_COLOR[d] }}>{DIM_LABEL[d]}</span>
+                  <span style={{ width: 26, color: DIM_COLOR[d] }}>{DIM_LABEL[d]}</span>
                   <div style={{ flex: 1, height: 5, background: '#8883', borderRadius: 3 }}>
                     <div style={{ width: `${snap.state[d] * 100}%`, height: '100%', background: DIM_COLOR[d], borderRadius: 3 }} />
                   </div>
@@ -427,15 +428,34 @@ function chromaKey(src: string): Promise<string> {
         g.drawImage(img, 0, 0)
         const frame = g.getImageData(0, 0, c.width, c.height)
         const d = frame.data
+        // 采样四角估绿幕底色（立绘为统一绿底，四角不被人物遮挡）
+        let bgR = 0, bgG = 0, bgB = 0
+        for (const [px, py] of [[2, 2], [c.width - 3, 2], [2, c.height - 3], [c.width - 3, c.height - 3]] as const) {
+          const k = (py * c.width + px) * 4
+          bgR += d[k]; bgG += d[k + 1]; bgB += d[k + 2]
+        }
+        bgR /= 4; bgG /= 4; bgB /= 4
+        const KEY_HI = 52 // 绿色超出量高于此值：绿幕核心，全透
+        const KEY_LO = 18 // 羽化带下限
         for (let i = 0; i < d.length; i += 4) {
-          const ex = d[i + 1] - Math.max(d[i], d[i + 2]) // 绿色超出量
-          if (ex > 60) {
+          const r = d[i], gg = d[i + 1], b = d[i + 2]
+          const ex = gg - Math.max(r, b) // 绿色超出量
+          if (ex > KEY_HI) {
             d[i + 3] = 0
-          } else if (ex > 25) {
-            d[i + 3] = Math.round(d[i + 3] * ((60 - ex) / 35))
-            d[i + 1] = Math.max(d[i], d[i + 2]) + 10
-          } else if (ex > 12) {
-            d[i + 1] = Math.max(d[i], d[i + 2]) + 10 // 去绿溢色
+          } else if (ex > KEY_LO) {
+            // 羽化带：观测色 = 前景*a + 绿底*(1-a)。先按绿色超出量估覆盖率，
+            // 再反预乘还原前景色，彻底去掉边缘半透明像素里的绿底贡献（绿镶边根因）
+            const a0 = d[i + 3] / 255
+            const a = Math.max(0, Math.min(1, ((KEY_HI - ex) / (KEY_HI - KEY_LO)) * a0))
+            d[i + 3] = Math.round(a * 255)
+            if (a > 0.03) {
+              d[i]     = Math.max(0, Math.min(255, Math.round((r - bgR * (1 - a)) / a)))
+              d[i + 1] = Math.max(0, Math.min(255, Math.round((gg - bgG * (1 - a)) / a)))
+              d[i + 2] = Math.max(0, Math.min(255, Math.round((b - bgB * (1 - a)) / a)))
+            }
+          } else if (ex > 6) {
+            // 近不透区域的轻度绿溢：绿通道压回红蓝均值
+            d[i + 1] = Math.round(Math.min(gg, (r + b) / 2))
           }
         }
         g.putImageData(frame, 0, 0)
@@ -712,7 +732,11 @@ function PetWindow({ onBack, onClose }: { onBack: () => void; onClose: () => voi
           {snap && vs ? <avatar.Body state={state} vs={vs} gaze={gaze} /> : <BubbleWaiting />}
         </div>
       </div>
-      <div style={{ textAlign: 'center', fontSize: 10, color: '#9aa2ab', textShadow: '0 1px 3px #000', pointerEvents: 'none' }}>
+      <div style={{
+        textAlign: 'center', fontSize: 11, fontWeight: 600, color: '#e6ebf0',
+        textShadow: '0 1px 2px rgba(0,0,0,.95), 0 0 1px rgba(0,0,0,.9)', pointerEvents: 'none',
+      }}
+      >
         {vs ? PET_STATE_LABEL[state] : '连接中…'}
       </div>
       {/* hover 工具栏：回雷达 / 切形象 / 关闭（按钮 mousedown 冒泡仅置位拖拽，

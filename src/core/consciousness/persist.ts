@@ -21,6 +21,8 @@ export interface ConsciousnessSnapshot {
   state: PsiState
   needs: NeedsVector
   tick: number
+  /** 经历帧数（真实刺激计数；v2 旧快照无此字段，恢复时按 0 续接） */
+  eventTick?: number
   modeStats: Record<string, { wins: number; trials: number }>
   calibBase: { successes: number; trials: number }
 }
@@ -40,6 +42,7 @@ export function captureConsciousness(engine: ConsciousnessEngine, monitor: Metac
     state: state as PsiState,
     needs: engine.needsSnapshot(),
     tick,
+    eventTick: engine.eventTick,
     modeStats: m.modeStats,
     calibBase: m.base,
   }
@@ -78,7 +81,7 @@ export function restoreConsciousness(
   monitor: MetacognitiveMonitor,
   snap: ConsciousnessSnapshot,
 ): void {
-  engine.restore({ state: snap.state, needs: snap.needs, tick: snap.tick })
+  engine.restore({ state: snap.state, needs: snap.needs, tick: snap.tick, eventTick: snap.eventTick })
   monitor.importState({ modeStats: snap.modeStats, base: snap.calibBase })
 }
 
