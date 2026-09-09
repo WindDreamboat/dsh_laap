@@ -72,4 +72,9 @@ export class LaapService extends Service {
   uiSnapshot() {
     return this.kernel.uiSnapshot()
   }
+
+  /** 订阅快照推送（SSE 源）：帧定稿/心跳即推，返回取消订阅函数 */
+  subscribeSnapshot(cb: (s: ReturnType<LaapKernel['uiSnapshot']>) => void): () => void {
+    return this.kernel.onSnapshot(cb)
+  }
 }

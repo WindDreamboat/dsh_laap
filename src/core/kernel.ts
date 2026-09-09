@@ -16,6 +16,7 @@ import { MemoryLayer, type MemoryKind } from './memory/store.ts'
 import { HASH_DIM, hashEmbed, type EmbedAsyncFn } from './memory/embed.ts'
 import { captureConsciousness, loadConsciousness, restoreConsciousness, saveConsciousness } from './consciousness/persist.ts'
 import type { CognitiveEvent, ConsciousnessFrame, NeedsVector } from './consciousness/types.ts'
+import type { UiSnapshot } from './snapshot-types.ts'
 import { consoleLogger, defaultScheduler, type KernelLogger, type KernelScheduler, type MemoryPort, type PlatformAdapter } from './ports.ts'
 
 export interface LaapKernelOptions {
@@ -82,6 +83,10 @@ export class LaapKernel {
   restoredFrom: { savedAt: number; tick: number } | null = null
   /** 心跳清理函数（dispose 时调用） */
   private stopHeartbeat: (() => void) | null = null
+  /** 最近一次非 idle 认知事件的时间（idleSeconds 的数据原料） */
+  private lastActivityAt = Date.now()
+  /** 快照订阅者（SSE 推送源；无订阅者时不产生任何推送开销） */
+  private readonly snapshotListeners = new Set<(s: UiSnapshot) => void>()
 
   constructor(opts: LaapKernelOptions) {
     this.log = opts.logger ?? consoleLogger
@@ -116,6 +121,7 @@ export class LaapKernel {
         this.bus.submit('somatic', this.internalMurmur(), 0.5)
         this.finalizeFrame(this.bus.broadcast())
         this.saveIfDue()
+        this.emitSnapshot()
       }, hb)
     }
   }
@@ -144,7 +150,7 @@ export class LaapKernel {
     }
   }
 
-  /** 消费一个认知事件 → 状态演化 → 总线投稿 → 广播意识帧 */
+  /** 消费一个认知事件 → 状态演化 → 总线投稿 → 广播意识帧 → 推送快照 */
   perceive(event: CognitiveEvent): ConsciousnessFrame {
     // 成效归因：任务/行动结局记到「上一个使用的模式」头上（L4 数据回路）
     if (this.lastModeUsed) {
@@ -153,6 +159,7 @@ export class LaapKernel {
         this.monitor.recordMode(this.lastModeUsed, ok)
       }
     }
+    if (event.type !== 'idle') this.lastActivityAt = Date.now()
     this.engine.process(event)
     this.bus.submit(
       event.type.startsWith('tool') ? 'action' : event.type === 'user_message' ? 'perception' : 'somatic',
@@ -160,7 +167,28 @@ export class LaapKernel {
       event.type === 'tool_error' ? 1.0 : 0.8,
     )
     this.detectNovelty(event)
-    return this.finalizeFrame(this.bus.broadcast())
+    const frame = this.finalizeFrame(this.bus.broadcast())
+    // 状态同步（而非让表现层重算）：帧一定稿就把快照推给订阅者
+    this.emitSnapshot()
+    return frame
+  }
+
+  /**
+   * 订阅意识快照（推送架构）：每帧定稿 / 心跳演化后立即推送，
+   * 无订阅者时零开销。返回取消订阅函数。
+   */
+  onSnapshot(cb: (s: UiSnapshot) => void): () => void {
+    this.snapshotListeners.add(cb)
+    return () => { this.snapshotListeners.delete(cb) }
+  }
+
+  /** 向所有订阅者推送当前快照（监听者异常隔离，不影响内核） */
+  private emitSnapshot(): void {
+    if (this.snapshotListeners.size === 0) return
+    const snap = this.uiSnapshot()
+    for (const cb of this.snapshotListeners) {
+      try { cb(snap) } catch { /* 单个订阅者失败不影响其余通道 */ }
+    }
   }
 
   /**
@@ -339,26 +367,19 @@ export class LaapKernel {
   }
 
   /**
-   * UI 聚合快照：宿主端（或经 rpc 转发给面板）一次取全意识态势。
-   * 纯 JSON 可序列化，供 React 面板直接渲染雷达图/时间线。
+   * UI 聚合快照：宿主端（或经 rpc/SSE 转发给面板）一次取全意识态势。
+   * 纯 JSON 可序列化，形状契约见 src/core/snapshot-types.ts（双端共享类型源）。
+   * 内核只生成数据：情绪脉冲 emotion、心境分类 mood、空闲秒数 idleSeconds
+   * 都在此下发，表现层只做映射，不重算任何语义。
    */
-  uiSnapshot(): {
-    state: ReturnType<ConsciousnessEngine['snapshot']>
-    needs: ReturnType<ConsciousnessEngine['needsSnapshot']>
-    drives: NeedsVector
-    emotion: ReturnType<ConsciousnessEngine['emotion']>
-    monitor: ReturnType<MetacognitiveMonitor['summary']>
-    modeStats: Record<string, { winRate: number; trials: number }>
-    working: string[]
-    skills: number
-    restoredFrom: { savedAt: number; tick: number } | null
-    frameLog: { tick: number; mode: string; qualia: string[]; salience: number; at: number }[]
-  } {
+  uiSnapshot(): UiSnapshot {
     return {
       state: this.engine.snapshot(),
       needs: this.engine.needsSnapshot(),
       drives: this.engine.dominantDrive(),
       emotion: this.engine.emotion(),
+      mood: this.engine.mood(),
+      idleSeconds: Math.max(0, (Date.now() - this.lastActivityAt) / 1000),
       monitor: this.monitor.summary(),
       modeStats: this.monitor.modeEfficacy(),
       working: this.memory.getWorking(),

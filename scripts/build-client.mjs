@@ -54,6 +54,9 @@ const result = await esbuild.build({
   external: EXTERNAL,
   legalComments: 'none',
   write: false,
+  // 桌宠立绘（img/*.png）以 data URL 内联：宿主只按 exports 下发单个
+  // client.js，没有静态资源路由；色键抠图在运行时 canvas 完成
+  loader: { '.png': 'dataurl' },
   define: { 'process.env.NODE_ENV': '"production"' },
 })
 

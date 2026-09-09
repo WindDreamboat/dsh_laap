@@ -5,50 +5,56 @@
  * document.body 挂出悬浮层（绕开侧栏 overflow/transform 包含块），两种形态：
  *  1. 雷达悬浮窗（默认）：五维 Ψ 雷达 + 需求剥夺条 + 意识流时间线，
  *     可拖拽、位置/形态记忆（localStorage）。
- *  2. 意识桌宠：内核 uiSnapshot 纯 JSON 的视觉投影——
- *     · valence > 0：开心表情 + 绿色呼吸光晕；valence < 0：疲惫表情 + 红色闪烁
- *     · deliberate 模式：思考气泡动画；exploratory 模式：眼球跟随鼠标
- *     · tick 增长：头顶冒 +N 浮字（3s 轮询周期内可能合并为一次 +N）
+ *  2. 意识桌宠：内核【状态同步】而非前端状态重算——SSE 推送心境分类
+ *     mood.label / 认知模式 / 空闲秒数，PetFsm 只做一张优先级映射表
+ *     （angry > 空闲休息 > study/explore > 低能量休息 > like/happy > idle）
+ *     + 3s 时间滞回防抖；点击身体触发 0.9s 开心瞬时态。内置 momo 立绘
+ *     形象（img/*.png，文件名即状态，运行时 canvas 绿幕抠除），另保留
+ *     零资源 SVG 形象 blob。
  *
- * 形象扩展点：实现 PetAvatar 接口并登记进 PET_AVATARS 即可（例如立绘包：
- * Body 内用 <img> 分层、按 PetVisualState 切表情层），桌宠工具栏循环切换。
+ * 形象扩展点：实现 PetAvatar 接口并登记进 PET_AVATARS（立绘包提供
+ * 「状态 → 图片」表即可），桌宠工具栏循环切换。
  *
- * 架构边界：本文件是纯表现层，只消费 RPC `/laap/snapshot` 的只读 JSON，
- * 不调用任何内核写接口；与 laap_* 工具一样属于宿主侧「投影」。
- * 数据通道为 Connection RPC 独立频道（/api 是网关保留频道，第三方不得
- * intercept）；与 dsh 前端共享同一 React / react-dom 实例（不自行打包）。
+ * 架构边界：本文件是纯表现层，只消费内核下发的只读数据，不调用任何内核
+ * 写接口、不持有情绪/能量阈值。数据通道：SSE 推送 `/api/laap/stream`
+ * （帧定稿即推 + 3s 慢泵）为主，一元 RPC `/laap/snapshot` 轮询为兜底，
+ * 两通道归一化到同一 store；快照契约类型来自内核共享源 snapshot-types。
+ * 与 dsh 前端共享同一 React / react-dom 实例（不自行打包）。
  */
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { CSSProperties, ReactElement } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
+import imgAnger from '../../../img/anger.png'
+import imgHappy from '../../../img/happy.png'
+import imgHello from '../../../img/hello.png'
+import imgLike from '../../../img/like.png'
+import imgRest from '../../../img/rest.png'
+import imgStudy from '../../../img/study.png'
+import { PetFsm, PET_STATE_LABEL, PET_IDLE_MS, type PetState } from './pet-fsm.ts'
+import type { UiSnapshot } from '../../core/snapshot-types.ts'
+import type { CognitiveMode } from '../../core/consciousness/types.ts'
 
 export const name = 'laap-ui'
 export const inject = ['slots']
 
-/** ── 数据类型（与 LaapService.uiSnapshot 对齐的最小投影）─────────── */
-interface Snap {
-  state: { stress: number; confidence: number; curiosity: number; relatedness: number; energy: number; tick: number }
-  drives: Record<string, number>
-  emotion: { valence: number }
-  monitor: { calibrated: number; failureRate: number }
-  skills: number
-  restoredFrom: { savedAt: number; tick: number } | null
-  frameLog: { tick: number; mode: string; qualia: string[]; salience: number }[]
-}
+/**
+ * 快照类型直接来自内核共享契约（src/core/snapshot-types.ts，type-only
+ * 导入在打包时擦除）；双端不再各自手写结构，字段漂移在编译期暴露。
+ */
+type Snap = UiSnapshot
 
 const DIMENSIONS = ['stress', 'confidence', 'curiosity', 'relatedness', 'energy'] as const
 const DIM_LABEL: Record<string, string> = { stress: '压', confidence: '信', curiosity: '奇', relatedness: '连', energy: '能' }
 const DIM_COLOR: Record<string, string> = {
   stress: '#e05d5d', confidence: '#4fae6d', curiosity: '#e0a13d', relatedness: '#5d8fe0', energy: '#9a6de0',
 }
-const MODE_COLOR: Record<string, string> = {
+const MODE_COLOR: Record<CognitiveMode, string> = {
   intuitive: '#8a8f98', deliberate: '#4fae6d', analytic: '#5d8fe0', creative: '#9a6de0', reflective: '#e0a13d', exploratory: '#e0704f',
 }
-const MODE_LABEL: Record<string, string> = {
+const MODE_LABEL: Record<CognitiveMode, string> = {
   intuitive: '直觉', deliberate: '思考', analytic: '分析', creative: '创造', reflective: '反思', exploratory: '探索',
 }
-const MOOD_LABEL: Record<Mood, string> = { happy: '开心', tired: '疲惫', calm: '平静' }
 
 type ViewKind = 'radar' | 'pet'
 const VIEW_KEY = 'laap:view'
@@ -97,37 +103,78 @@ const rpc: SimpleRpc = {
   },
 }
 
-/** ── 共享快照 store：全插件单路 3s 轮询，指示器/雷达/桌宠共用 ─────── */
+/** ── 共享快照 store：SSE 推送为主、一元 RPC 轮询为兜底，全插件共用 ──
+ * 两条通道归一化到同一 snapCache（去重键 = 到达顺序，快照本身幂等）：
+ *  - SSE（/api/laap/stream）：内核帧定稿/心跳即推 + 3s 慢泵，事件级实时；
+ *  - 轮询（POST /laap/snapshot）：SSE 新鲜（6s 内有推送）时自动休眠，
+ *    SSE 断线/不支持时无缝接管，EventSource 自带重连。 */
 type SnapListener = (s: Snap | null) => void
 let snapCache: Snap | null = null
 const snapListeners = new Set<SnapListener>()
 let snapTimer: ReturnType<typeof setInterval> | null = null
+let snapStream: EventSource | null = null
 let inflight = false
-async function pullSnap() {
+let lastPushAt = 0
+/** SSE 推送新鲜期：该窗口内认为推送通道健康，轮询跳过 */
+const PUSH_FRESH_MS = 6000
+
+function applySnap(s: Snap): void {
+  snapCache = s
+  for (const l of snapListeners) l(snapCache)
+}
+
+async function pullSnap(): Promise<void> {
   if (inflight) return
   inflight = true
   try {
     const r = await rpc.call('/laap', 'snapshot', {})
-    if (r.ok) {
-      snapCache = r.value as Snap
-      for (const l of snapListeners) l(snapCache)
-    }
+    if (r.ok) applySnap(r.value as Snap)
   } catch { /* 宿主离线/未装 laap：维持旧值 */ } finally {
     inflight = false
   }
 }
+
+/** 兜底轮询：SSE 健康时静默，超过新鲜期无推送才实际发请求 */
+async function fallbackPull(): Promise<void> {
+  if (Date.now() - lastPushAt < PUSH_FRESH_MS) return
+  await pullSnap()
+}
+
+function openSnapshotStream(): void {
+  const g = globalThis as typeof globalThis & { EventSource?: typeof EventSource }
+  const loc = globalThis.location as { origin?: string } | undefined
+  if (typeof g.EventSource !== 'function' || !loc?.origin || loc.origin === 'null') return
+  try {
+    const es = new g.EventSource(`${loc.origin}/api/laap/stream`)
+    snapStream = es
+    es.onmessage = (ev: MessageEvent<string>) => {
+      try {
+        const msg = JSON.parse(ev.data) as { type?: string; value?: Snap }
+        if (msg.type === 'snapshot' && msg.value) {
+          lastPushAt = Date.now()
+          applySnap(msg.value)
+        }
+      } catch { /* 单帧坏数据跳过，连接保持 */ }
+    }
+    // onerror 不处理：EventSource 自动重连；重连期间 lastPushAt 老化 → 轮询接管
+  } catch { /* SSE 不可用：纯轮询模式 */ }
+}
+
 function subscribeSnap(l: SnapListener): () => void {
   snapListeners.add(l)
   if (snapListeners.size === 1) {
-    void pullSnap()
-    snapTimer = setInterval(pullSnap, 3000)
+    lastPushAt = 0
+    void pullSnap() // 立即基线（首帧不等 SSE 建连）
+    openSnapshotStream()
+    snapTimer = setInterval(() => void fallbackPull(), 3000)
   }
   l(snapCache)
   return () => {
     snapListeners.delete(l)
-    if (snapListeners.size === 0 && snapTimer !== null) {
-      clearInterval(snapTimer)
-      snapTimer = null
+    if (snapListeners.size === 0) {
+      if (snapTimer !== null) { clearInterval(snapTimer); snapTimer = null }
+      snapStream?.close()
+      snapStream = null
     }
   }
 }
@@ -296,8 +343,8 @@ function Timeline({ frames }: { frames: Snap['frameLog'] }) {
       </div>
       {recent.length > 0 && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6, fontSize: 10 }}>
-          {Object.entries(MODE_COLOR).map(([m, c]) => (
-            <span key={m} style={{ color: '#aaa' }}><span style={{ color: c }}>■</span>{MODE_LABEL[m] ?? m}</span>
+          {(Object.entries(MODE_COLOR) as [CognitiveMode, string][]).map(([m, c]) => (
+            <span key={m} style={{ color: '#aaa' }}><span style={{ color: c }}>■</span>{MODE_LABEL[m]}</span>
           ))}
         </div>
       )}
@@ -309,7 +356,8 @@ function Timeline({ frames }: { frames: Snap['frameLog'] }) {
 function RadarWindow({ onPet, onClose }: { onPet: () => void; onClose: () => void }) {
   const snap = useSnap()
   const { pos, handleRef } = useFixedDrag<HTMLDivElement>(radarPosKey, { w: 300, h: 380 }, () => ({ x: globalThis.innerWidth - 316, y: 96 }))
-  const v = snap?.emotion.valence ?? 0
+  // 标题栏心境指示：用内核 EMA 平滑后的 mood.level（瞬时脉冲见时间线 qualia）
+  const v = snap?.mood.level ?? 0
   return createPortal(
     <div className="laap-pop" style={{ ...panelStyle, position: 'fixed', left: pos.x, top: pos.y, zIndex: 9999, width: 300 }}>
       <div ref={handleRef} style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'move', marginBottom: 8 }}>
@@ -355,51 +403,135 @@ function RadarWindow({ onPet, onClose }: { onPet: () => void; onClose: () => voi
   )
 }
 
+/** ── 桌宠有限状态机（实现见 pet-fsm.ts，纯逻辑可独立单测）────────── */
+
+/** ── 绿幕色键（运行时 canvas 抠图）──────────────────────────────
+ * 立绘 PNG 为统一绿底，直接渲染会是绿方块：首次使用时把绿色主导像素
+ * alpha 置 0（强绿全透、边缘羽化），并对保留像素做去绿溢色（减轻发丝
+ * 边缘的绿镶边），输出 data URL 缓存。输入本身是 data URL，无跨域污染。 */
+const chromaCache = new Map<string, Promise<string>>()
+function chromaKey(src: string): Promise<string> {
+  const cached = chromaCache.get(src)
+  if (cached) return cached
+  const p = new Promise<string>((resolve) => {
+    const doc = (globalThis as { document?: Document }).document
+    if (typeof Image === 'undefined' || !doc) { resolve(src); return }
+    const img = new Image()
+    img.onload = () => {
+      try {
+        const c = doc.createElement('canvas')
+        c.width = img.naturalWidth
+        c.height = img.naturalHeight
+        const g = c.getContext('2d')
+        if (!g) { resolve(src); return }
+        g.drawImage(img, 0, 0)
+        const frame = g.getImageData(0, 0, c.width, c.height)
+        const d = frame.data
+        for (let i = 0; i < d.length; i += 4) {
+          const ex = d[i + 1] - Math.max(d[i], d[i + 2]) // 绿色超出量
+          if (ex > 60) {
+            d[i + 3] = 0
+          } else if (ex > 25) {
+            d[i + 3] = Math.round(d[i + 3] * ((60 - ex) / 35))
+            d[i + 1] = Math.max(d[i], d[i + 2]) + 10
+          } else if (ex > 12) {
+            d[i + 1] = Math.max(d[i], d[i + 2]) + 10 // 去绿溢色
+          }
+        }
+        g.putImageData(frame, 0, 0)
+        resolve(c.toDataURL('image/png'))
+      } catch {
+        resolve(src) // canvas 不可用时退回原图（带绿底），不阻塞渲染
+      }
+    }
+    img.onerror = () => resolve(src)
+    img.src = src
+  })
+  chromaCache.set(src, p)
+  return p
+}
+
 /** ── 桌宠形象扩展点 ─────────────────────────────────────────────
- * 新增形象：实现一个 Body 组件并登记到 PET_AVATARS（立绘/图片包可在
- * Body 内用 <img> 分层，按 vs.mood / vs.mode 切换表情层与装饰）。
+ * 新增立绘形象：提供「PetState → 图片 URL」表并登记 PET_AVATARS 即可
+ * （文件名即状态）；FSM、光晕、+N 浮字、拖拽等由外壳统一提供。
  * 桌宠工具栏会按注册表顺序循环切换；id 持久化在 localStorage。 */
-type Mood = 'happy' | 'tired' | 'calm'
 interface PetVisualState {
-  mood: Mood
-  mode: string
-  valence: number
+  /** 内核平滑心境水平（SVG 类形象做细节差异用） */
+  moodLevel: number
   stress: number
   energy: number
   tick: number
+  mode: CognitiveMode
 }
 interface PetAvatarProps {
+  /** FSM 裁决后的有效状态（已包含点击瞬时态） */
+  state: PetState
+  /** 原始快照数值（SVG 类形象做细节差异用） */
   vs: PetVisualState
-  /** 视线单位向量 [-1,1]（exploratory 模式下跟随鼠标，其余为 0） */
+  /** 视线单位向量 [-1,1]（explore 状态下跟随鼠标，其余为 0） */
   gaze: XY
 }
 interface PetAvatar {
   id: string
   label: string
   Body: (p: PetAvatarProps) => ReactElement
+  /** 是否在专注态显示思考气泡装饰（立绘自身已表意，默认 false） */
+  thoughtBubble?: boolean
 }
 
-function deriveVS(snap: Snap): PetVisualState {
-  const v = snap.emotion.valence
-  return {
-    mood: v > 0.02 ? 'happy' : v < -0.02 ? 'tired' : 'calm',
-    mode: snap.frameLog.at(-1)?.mode ?? 'intuitive',
-    valence: v,
-    stress: snap.state.stress,
-    energy: snap.state.energy,
-    tick: snap.state.tick,
-  }
+/** 立绘形象 momo：img/*.png，文件名对应 FSM 状态（explore 复用 hello） */
+const MOMO_IMG: Record<PetState, string> = {
+  idle: imgHello,
+  happy: imgHappy,
+  like: imgLike,
+  angry: imgAnger,
+  study: imgStudy,
+  explore: imgHello,
+  rest: imgRest,
+}
+function MomoBody({ state, gaze }: PetAvatarProps): ReactElement {
+  const [url, setUrl] = useState<string | null>(null)
+  useEffect(() => {
+    let alive = true
+    void chromaKey(MOMO_IMG[state]).then((u) => { if (alive) setUrl(u) })
+    // 首次挂载即后台预热其余状态，之后切态零等待
+    for (const s of Object.keys(MOMO_IMG) as PetState[]) void chromaKey(MOMO_IMG[s])
+    return () => { alive = false }
+  }, [state])
+  const tilt = state === 'explore'
+    ? `rotate(${gaze.x * 7}deg) translate(${gaze.x * 3}px, ${gaze.y * 3}px)`
+    : undefined
+  return (
+    <div style={{ width: 124, height: 150, display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>
+      {url
+        ? (
+          <img
+            key={url}
+            src={url}
+            alt=""
+            draggable={false}
+            className="laap-pop"
+            style={{
+              maxWidth: 124, maxHeight: 150, transform: tilt, transition: 'transform .12s ease-out',
+              filter: 'drop-shadow(0 4px 6px rgba(0,0,0,.5))', pointerEvents: 'none',
+            }}
+          />
+        )
+        : <BubbleWaiting />}
+    </div>
+  )
 }
 
-/** 内置形象：意识团（纯 SVG，零资源；情绪表情 + 可转动眼球） */
-function BlobBody({ vs, gaze }: PetAvatarProps): ReactElement {
-  const tint = vs.mood === 'happy' ? '#8fe0b4' : vs.mood === 'tired' ? '#aab4bd' : '#7fc9d6'
-  const dark = vs.mood === 'tired' ? '#6c7681' : '#3d8c9a'
-  // exploratory 模式强制睁眼（视线要可见）；疲惫时眼睛画成下垂弧线
-  const openEyes = vs.mood !== 'tired' || vs.mode === 'exploratory'
-  const mouth = vs.mood === 'happy'
+/** 零资源形象：意识团（纯 SVG；情绪表情 + 可转动眼球） */
+function BlobBody({ state, gaze }: PetAvatarProps): ReactElement {
+  const mood = state === 'angry' ? 'tired' : state === 'happy' || state === 'like' ? 'happy' : 'calm'
+  const tint = mood === 'happy' ? '#8fe0b4' : mood === 'tired' ? '#aab4bd' : '#7fc9d6'
+  const dark = mood === 'tired' ? '#6c7681' : '#3d8c9a'
+  // explore 状态强制睁眼（视线要可见）；生气时眼睛画成下垂弧线
+  const openEyes = mood !== 'tired' || state === 'explore'
+  const mouth = mood === 'happy'
     ? 'M40,62 Q48,71 56,62'
-    : vs.mood === 'tired' ? 'M43,66 Q48,61 53,66' : 'M43,64 L53,64'
+    : mood === 'tired' ? 'M43,66 Q48,61 53,66' : 'M43,64 L53,64'
   return (
     <svg width="92" height="92" viewBox="0 0 100 100" aria-hidden="true">
       <defs>
@@ -410,7 +542,7 @@ function BlobBody({ vs, gaze }: PetAvatarProps): ReactElement {
         </radialGradient>
       </defs>
       <ellipse cx="50" cy="54" rx="34" ry="32" fill="url(#laap-blob-grad)" stroke="#ffffff22" />
-      {vs.mood === 'happy' && (
+      {mood === 'happy' && (
         <>
           <circle cx="29" cy="58" r="4.5" fill="#ef8fa0" opacity="0.55" />
           <circle cx="71" cy="58" r="4.5" fill="#ef8fa0" opacity="0.55" />
@@ -440,25 +572,54 @@ function BlobBody({ vs, gaze }: PetAvatarProps): ReactElement {
 }
 
 const PET_AVATARS: Record<string, PetAvatar> = {
-  blob: { id: 'blob', label: '意识团', Body: BlobBody },
+  momo: { id: 'momo', label: '茉茉', Body: MomoBody },
+  blob: { id: 'blob', label: '意识团', Body: BlobBody, thoughtBubble: true },
+}
+const DEFAULT_AVATAR = 'momo'
+
+function deriveVS(snap: Snap): PetVisualState {
+  return {
+    moodLevel: snap.mood.level,
+    stress: snap.state.stress,
+    energy: snap.state.energy,
+    tick: snap.state.tick,
+    mode: snap.frameLog.at(-1)?.mode ?? 'intuitive',
+  }
 }
 
 /** ── 意识桌宠悬浮层 ───────────────────────────────────────────── */
 function PetWindow({ onBack, onClose }: { onBack: () => void; onClose: () => void }) {
   const snap = useSnap()
-  const { pos, handleRef, movedRef } = useFixedDrag<HTMLDivElement>(petPosKey, { w: 104, h: 128 }, () => ({ x: globalThis.innerWidth - 160, y: globalThis.innerHeight - 232 }))
+  const { pos, handleRef, movedRef } = useFixedDrag<HTMLDivElement>(petPosKey, { w: 136, h: 196 }, () => ({ x: globalThis.innerWidth - 152, y: globalThis.innerHeight - 276 }))
   const bodyRef = useRef<HTMLDivElement>(null)
   const [gaze, setGaze] = useState<XY>({ x: 0, y: 0 })
   const [pops, setPops] = useState<{ id: number; n: number }[]>([])
   const [hop, setHop] = useState(0)
   const popId = useRef(0)
   const lastTick = useRef<number | null>(null)
+  const fsmRef = useRef<PetFsm | null>(null)
+  if (!fsmRef.current) fsmRef.current = new PetFsm()
+  const [base, setBase] = useState<PetState>('idle')
+  // 点击瞬时态（happy 0.9s）：与基础态分层，不顶掉 FSM 状态
+  const [reactUntil, setReactUntil] = useState(0)
+  const reactTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [avatarId, setAvatarId] = useState(() => {
     const saved = lsGet(AVATAR_KEY)
-    return saved && PET_AVATARS[saved] ? saved : 'blob'
+    return saved && PET_AVATARS[saved] ? saved : DEFAULT_AVATAR
   })
 
   const vs = snap ? deriveVS(snap) : null
+
+  // 快照 → FSM 映射表（SSE 事件驱动推送 + 3s 慢泵；前端只映射不重算）
+  useEffect(() => {
+    if (!snap || !fsmRef.current) return
+    setBase(fsmRef.current.update({
+      mood: snap.mood.label,
+      mode: snap.frameLog.at(-1)?.mode ?? 'intuitive',
+      idle: snap.idleSeconds * 1000 > PET_IDLE_MS,
+      now: Date.now(),
+    }))
+  }, [snap])
 
   // tick 增长 → 头顶 +N（一个轮询周期内的多跳合并显示）
   useEffect(() => {
@@ -475,9 +636,11 @@ function PetWindow({ onBack, onClose }: { onBack: () => void; onClose: () => voi
     }
   }, [snap])
 
-  // exploratory：眼球跟随鼠标（相对桌宠中心的单位向量）
+  const state: PetState = reactUntil > Date.now() ? 'happy' : base
+
+  // explore：视线跟随鼠标（立绘为整体轻微倾斜，SVG 形象为眼球位移）
   useEffect(() => {
-    if (vs?.mode !== 'exploratory') {
+    if (base !== 'explore') {
       setGaze({ x: 0, y: 0 })
       return
     }
@@ -492,7 +655,7 @@ function PetWindow({ onBack, onClose }: { onBack: () => void; onClose: () => voi
     }
     window.addEventListener('mousemove', onMove)
     return () => window.removeEventListener('mousemove', onMove)
-  }, [vs?.mode])
+  }, [base])
 
   const cycleAvatar = () => {
     const ids = Object.keys(PET_AVATARS)
@@ -500,11 +663,21 @@ function PetWindow({ onBack, onClose }: { onBack: () => void; onClose: () => voi
     setAvatarId(next)
     lsSet(AVATAR_KEY, next)
   }
-  const avatar = PET_AVATARS[avatarId] ?? PET_AVATARS.blob
-  const haloClass = vs?.mood === 'happy' ? 'laap-halo-good' : vs?.mood === 'tired' ? 'laap-halo-bad' : 'laap-halo-calm'
+  const avatar = PET_AVATARS[avatarId] ?? PET_AVATARS[DEFAULT_AVATAR]
+  const haloClass = state === 'angry' ? 'laap-halo-bad' : state === 'happy' || state === 'like' ? 'laap-halo-good' : 'laap-halo-calm'
   const aria = vs
-    ? `意识桌宠：${MOOD_LABEL[vs.mood]}·${MODE_LABEL[vs.mode] ?? vs.mode}，tick ${vs.tick}`
+    ? `意识桌宠：${PET_STATE_LABEL[state]}（tick ${vs.tick}）`
     : '意识桌宠：等待内核应答'
+
+  const onPetClick = () => {
+    if (movedRef.current) return
+    const now = Date.now()
+    fsmRef.current?.poke(now)
+    setHop((h) => h + 1)
+    setReactUntil(now + 900)
+    if (reactTimer.current) clearTimeout(reactTimer.current)
+    reactTimer.current = setTimeout(() => setReactUntil(0), 900)
+  }
 
   return createPortal(
     <div
@@ -512,8 +685,8 @@ function PetWindow({ onBack, onClose }: { onBack: () => void; onClose: () => voi
       className="laap-petroot"
       role="img"
       aria-label={aria}
-      onClick={() => { if (!movedRef.current) setHop((h) => h + 1) }}
-      style={{ position: 'fixed', left: pos.x, top: pos.y, zIndex: 9999, width: 104, cursor: 'grab', userSelect: 'none', touchAction: 'none' }}
+      onClick={onPetClick}
+      style={{ position: 'fixed', left: pos.x, top: pos.y, zIndex: 9999, width: 136, cursor: 'grab', userSelect: 'none', touchAction: 'none' }}
     >
       {/* tick +N 浮字 */}
       {pops.map((p) => (
@@ -521,11 +694,11 @@ function PetWindow({ onBack, onClose }: { onBack: () => void; onClose: () => voi
           style={{ left: '50%', top: -4, marginLeft: -16, fontSize: 13, color: '#7fe0c0' }}>+{p.n}</span>
       ))}
       {/* 情绪光晕 */}
-      <div className={`laap-halo ${haloClass}`} style={{ left: -10, top: 4, width: 112, height: 112 }} />
-      {/* deliberate 思考气泡 */}
-      {vs?.mode === 'deliberate' && (
+      <div className={`laap-halo ${haloClass}`} style={{ left: 4, top: 6, width: 128, height: 128 }} />
+      {/* 专注思考气泡（仅声明支持的形象，如 blob） */}
+      {avatar.thoughtBubble && base === 'study' && (
         <div style={{
-          position: 'absolute', left: 84, top: 14, background: '#23272e', border: '1px solid #ffffff1a',
+          position: 'absolute', left: 100, top: 18, background: '#23272e', border: '1px solid #ffffff1a',
           borderRadius: 10, padding: '3px 7px', fontSize: 13, lineHeight: 1, color: '#cfd6dd',
           letterSpacing: 2, whiteSpace: 'nowrap', pointerEvents: 'none',
         }} className="laap-dots">
@@ -534,17 +707,17 @@ function PetWindow({ onBack, onClose }: { onBack: () => void; onClose: () => voi
       )}
       {/* 身体（外层 hop 点击反馈，内层 bob 呼吸浮动） */}
       <div ref={bodyRef} key={hop} className={hop > 0 ? 'laap-hop' : undefined}
-        style={{ position: 'relative', width: 92, height: 92, margin: '8px auto 0' }}>
-        <div className="laap-bob" style={{ width: 92, height: 92 }}>
-          {snap ? <avatar.Body vs={vs!} gaze={gaze} /> : <BubbleWaiting />}
+        style={{ position: 'relative', width: 124, height: 150, margin: '2px auto 0', display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}>
+        <div className="laap-bob" style={{ display: 'flex', alignItems: 'flex-end' }}>
+          {snap && vs ? <avatar.Body state={state} vs={vs} gaze={gaze} /> : <BubbleWaiting />}
         </div>
       </div>
       <div style={{ textAlign: 'center', fontSize: 10, color: '#9aa2ab', textShadow: '0 1px 3px #000', pointerEvents: 'none' }}>
-        {vs ? `${MODE_LABEL[vs.mode] ?? vs.mode} · ${MOOD_LABEL[vs.mood]}` : '连接中…'}
+        {vs ? PET_STATE_LABEL[state] : '连接中…'}
       </div>
       {/* hover 工具栏：回雷达 / 切形象 / 关闭（按钮 mousedown 冒泡仅置位拖拽，
           未移动即不视为拖拽，不影响 click） */}
-      <div className="laap-toolbar" style={{ position: 'absolute', right: -12, top: 34, display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <div className="laap-toolbar" style={{ position: 'absolute', right: -12, top: 40, display: 'flex', flexDirection: 'column', gap: 4 }}>
         <button onClick={onBack} title="回到雷达视图" style={miniBtn}>📊</button>
         <button onClick={cycleAvatar} title={`切换形象（当前：${avatar.label}）`} style={miniBtn}>🔄</button>
         <button onClick={onClose} title="收起桌宠" style={miniBtn}>✕</button>

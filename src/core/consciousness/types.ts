@@ -40,6 +40,23 @@ export type DriveVector = Partial<Record<keyof NeedsVector, number>>
 /** 认知模式（L2 认知控制的可选档位，对应 LAAP 六模式） */
 export type CognitiveMode = 'intuitive' | 'deliberate' | 'analytic' | 'creative' | 'reflective' | 'exploratory'
 
+/**
+ * 心境分类（数据语义，内核生成）：情绪微分 valence 是单 tick 脉冲，
+ * 经 EMA 平滑 + 衰减后得到持续「心境」，再由内核按阈值分类。
+ * 表现层只做 label → 画面的映射，不持有任何阈值。
+ */
+export type MoodLabel = 'negative' | 'neutral' | 'positive' | 'elated'
+
+/** 心境状态：原始脉冲 + 平滑水平 + 分类标签 */
+export interface MoodState {
+  /** 最近一个 tick 的情绪微分（事件愉悦/挫败脉冲，未平滑） */
+  valence: number
+  /** EMA 平滑后的心境水平（随时间衰减回 0） */
+  level: number
+  /** 心境分类（阈值口径在内核 state.ts） */
+  label: MoodLabel
+}
+
 /** 进入意识全局工作空间的候选信号 */
 export interface SalientSignal {
   /** 信号来源通道 */

@@ -12,5 +12,5 @@
     "jsx": "react-jsx",
     "types": []
   },
-  "include": ["src/adapters/cordis/ui-client.tsx", "src/adapters/cordis/client-shims.d.ts"]
+  "include": ["src/adapters/cordis/ui-client.tsx", "src/adapters/cordis/pet-fsm.ts", "src/adapters/cordis/client-shims.d.ts"]
 }

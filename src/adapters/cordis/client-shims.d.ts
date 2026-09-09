@@ -12,3 +12,9 @@
 declare module 'react-dom' {
   export function createPortal(children: any, container: any, key?: string | null): any
 }
+
+/** 立绘 PNG 经 esbuild dataurl loader 内联为 data: URL 字符串 */
+declare module '*.png' {
+  const src: string
+  export default src
+}
