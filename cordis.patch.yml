@@ -26,11 +26,22 @@
         noveltyThreshold: 0.45
         # 新异事件自动归档情景记忆（节流）
         autoEpisodic: true
-        # 嵌入：hash（离线默认）或 openai（OpenAI 兼容 API，key 走环境变量）
+        # 嵌入默认 hash：内置 256 维哈希袋，0 依赖 / 离线 / 免 Key，克隆即用。
+        # 本地切换真实嵌入无需改本文件（也不建议改，避免把个人配置提交进仓库）：
+        # 在启动目录放 .env（dsh 宿主自动加载，已在 .gitignore），环境变量优先级高于本文件：
+        #   本地 Ollama（先 ollama pull nomic-embed-text）：
+        #     LAAP_EMBED_PROVIDER=ollama
+        #     LAAP_EMBED_BASE_URL=http://localhost:11434/v1
+        #     LAAP_EMBED_MODEL=nomic-embed-text
+        #     LAAP_EMBED_DIMENSION=768
+        #     LAAP_NOVELTY_THRESHOLD=0.8
+        #   OpenAI 兼容接口：
+        #     LAAP_EMBED_PROVIDER=openai
+        #     LAAP_EMBED_BASE_URL=https://api.openai.com/v1
+        #     LAAP_EMBED_MODEL=text-embedding-3-small
+        #     LAAP_EMBED_DIMENSION=1536
+        #     EMBEDDING_API_KEY=sk-...
+        # 注意：换嵌入维度必须删除旧库目录（默认 ~/.dsh-laap/zvec-memory）重建。
         embedding:
           provider: hash
-          # provider: openai 时启用以下三行，并 export EMBEDDING_API_KEY=***
-          # baseUrl: https://api.openai.com/v1
-          # model: text-embedding-3-small
-          # dimension: 1536   # 换维度需删除旧库目录重建
           apiKeyEnv: EMBEDDING_API_KEY

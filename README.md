@@ -21,6 +21,32 @@ dsh plugin --profile web add link:/绝对路径/dsh-laap
 
 > ⚠️ `LAAP_ZVEC_PATH` 必须指向**本地文件系统**（默认 `~/.dsh-laap/zvec-memory`）。zvec 依赖 mmap，OSS/NFS 网络挂载会导致 Bus error。
 
+## 配置
+
+**零配置即可运行**：默认使用内置 256 维哈希袋嵌入（纯 JS、0 依赖、离线、免 API Key）。
+
+想接入真实语义嵌入（本地 Ollama 或 OpenAI 兼容接口）时，**无需改动仓库文件**：在启动目录（或 `~/.dsh`）放一个 `.env`（dsh 宿主启动时自动加载，已在 `.gitignore`）。配置优先级为 **环境变量 > `cordis.patch.yml` > 内置默认值**：
+
+```bash
+# 本地 Ollama（先 ollama pull nomic-embed-text）
+LAAP_EMBED_PROVIDER=ollama
+LAAP_EMBED_BASE_URL=http://localhost:11434/v1
+LAAP_EMBED_MODEL=nomic-embed-text
+LAAP_EMBED_DIMENSION=768
+LAAP_NOVELTY_THRESHOLD=0.8
+
+# 或 OpenAI 兼容接口
+# LAAP_EMBED_PROVIDER=openai
+# LAAP_EMBED_BASE_URL=https://api.openai.com/v1
+# LAAP_EMBED_MODEL=text-embedding-3-small
+# LAAP_EMBED_DIMENSION=1536
+# EMBEDDING_API_KEY=sk-...
+```
+
+全部环境变量：`LAAP_ZVEC_PATH` / `LAAP_SENSITIVITY` / `LAAP_HEARTBEAT_MS` / `LAAP_NOVELTY_THRESHOLD` / `LAAP_EMBED_PROVIDER` / `LAAP_EMBED_BASE_URL` / `LAAP_EMBED_MODEL` / `LAAP_EMBED_DIMENSION` / `LAAP_EMBED_API_KEY_ENV`。
+
+> ⚠️ **切换嵌入维度后必须删除旧向量库目录**（默认 `~/.dsh-laap/zvec-memory`）重建，维度不一致会导致写入失败。
+
 ## 验证
 
 ```bash

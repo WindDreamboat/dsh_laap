@@ -18,7 +18,7 @@ export interface LaapPluginConfig {
   noveltyThreshold: number
   autoEpisodic: boolean
   embedding: {
-    provider: 'hash' | 'openai'
+    provider: 'hash' | 'openai' | 'ollama'
     baseUrl: string
     model: string
     dimension: number
@@ -43,13 +43,15 @@ export const LaapConfigSpec = z.object({
   autoEpisodic: z.boolean().default(true),
   /** 嵌入提供者 */
   embedding: z.object({
-    /** hash = 内置 256 维哈希袋（离线、确定性）；openai = OpenAI 兼容 /embeddings API */
-    provider: z.union([z.const('hash'), z.const('openai')]).default('hash') as any,
-    baseUrl: z.string().default('https://api.openai.com/v1'),
-    model: z.string().default('text-embedding-3-small'),
-    /** 显式维度（openai 建议与模型对齐；改维度需删除旧库目录重建） */
+    /** hash = 内置256维哈希（纯JS计算，0依赖，保底首选）；openai = OpenAI 兼容接口；ollama = 本地 Ollama（OpenAI 兼容 /v1/embeddings） */
+    provider: z.union([z.const('hash'), z.const('openai'), z.const('ollama')]).default('hash') as any,
+    /** 默认走 hash 不需要 baseUrl；openai 填 https://api.openai.com/v1；ollama 填 http://localhost:11434/v1 */
+    baseUrl: z.string().default(''),
+    /** 默认用 hash；Ollama 改为 nomic-embed-text；OpenAI 改为 text-embedding-3-small */
+    model: z.string().default('dsha256'),
+    /** 显式维度：保持 256 默认保底，改 Ollama 的 768 需清空旧记忆目录重建 */
     dimension: z.natural().min(8).default(256),
-    /** 读 API key 的环境变量名（凭据不硬编码） */
+    /** 读 API key 的环境变量名（凭据不硬编码；ollama 本地无需 key） */
     apiKeyEnv: z.string().default('EMBEDDING_API_KEY'),
   }).default({} as any),
 })

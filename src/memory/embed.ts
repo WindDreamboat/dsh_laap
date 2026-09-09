@@ -3,7 +3,8 @@
  *
  * 两种实现：
  *  - hashEmbed：字符 bigram 哈希袋（256 维，零依赖、确定性、中英文均可），离线默认
- *  - openaiEmbed：OpenAI 兼容 /v1/embeddings（async），真实语义质量
+ *  - openaiEmbed：OpenAI 兼容 /v1/embeddings（async），真实语义质量；
+ *    同样适用于本地 Ollama（baseUrl=http://localhost:11434/v1，无需 apiKey）
  *
  * MemoryLayer 统一按 async 使用 EmbedAsyncFn；hash 实现也包成 async 保持一致接口。
  */
@@ -45,8 +46,8 @@ export const hashEmbed: EmbedAsyncFn = async (texts) => texts.map((t) => hashEmb
 export interface OpenaiEmbedOptions {
   baseUrl: string
   model: string
-  /** API key（从环境变量读取后传入，禁止硬编码） */
-  apiKey: string
+  /** API key（从环境变量读取后传入，禁止硬编码）；本地 Ollama 无需 key，留空即可 */
+  apiKey?: string
   dimension?: number
   /** 单请求批量上限（多数 API 支持数组输入） */
   batchSize?: number
@@ -65,7 +66,10 @@ export function openaiEmbed(opts: OpenaiEmbedOptions): EmbedAsyncFn {
       const batch = texts.slice(i, i + size)
       const res = await fetch(`${opts.baseUrl.replace(/\/$/, '')}/embeddings`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${opts.apiKey}` },
+        headers: {
+          'content-type': 'application/json',
+          ...(opts.apiKey ? { authorization: `Bearer ${opts.apiKey}` } : {}),
+        },
         body: JSON.stringify({
           model: opts.model,
           input: batch,

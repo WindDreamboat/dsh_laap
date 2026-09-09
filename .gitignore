@@ -1,0 +1,8 @@
+node_modules
+
+# 本地环境变量覆写（含个人配置/密钥，切勿提交）
+.env
+.env.local
+
+# dsh web 启动日志（含本地访问 token，勿提交）
+dsh-web-boot.log
