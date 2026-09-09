@@ -15,7 +15,7 @@ import { MetacognitiveMonitor } from './consciousness/monitor.ts'
 import { MemoryLayer, type MemoryKind } from './memory/store.ts'
 import { HASH_DIM, hashEmbed, type EmbedAsyncFn } from './memory/embed.ts'
 import { captureConsciousness, loadConsciousness, restoreConsciousness, saveConsciousness } from './consciousness/persist.ts'
-import type { CognitiveEvent, ConsciousnessFrame, NeedsVector } from './consciousness/types.ts'
+import type { CognitiveEvent, CognitiveMode, ConsciousnessFrame, NeedsVector } from './consciousness/types.ts'
 import type { UiSnapshot } from './snapshot-types.ts'
 import { consoleLogger, defaultScheduler, type KernelLogger, type KernelScheduler, type MemoryPort, type PlatformAdapter } from './ports.ts'
 
@@ -254,22 +254,74 @@ export class LaapKernel {
     if (this.consolidateEvery <= 0) return
     if (frame.tick - this.lastConsolidateTick < this.consolidateEvery) return
     this.lastConsolidateTick = frame.tick
-    const highlights = frame.broadcast.slice(0, 2).map((b) => b.content)
+    void this.distillAutobiography({
+      tick: frame.tick,
+      mode: frame.mode,
+      highlights: frame.broadcast.slice(0, 2).map((b) => b.content),
+      header: `我的近况自传（tick ${frame.tick}）：`,
+      id: `autobio-${frame.tick}`,
+    }).catch((err) => this.log.warn(`自传蒸馏写入失败: ${String(err).slice(0, 120)}`))
+  }
+
+  /**
+   * 会话压缩（compaction）兜底：压缩意味着对话细节即将被摘要替换，
+   * 立即把近期意识帧 + 工作记忆蒸馏成一段「阶段自传」沉淀语义层，
+   * 防止长程会话在压缩后失忆；随后强制落盘意识快照。
+   * 由宿主 hooks 在 compaction/summary 事件时调用（不经过 perceive，
+   * 因为这是生命周期信号而非认知刺激，不应扰动心境/需求动力学）。
+   *
+   * @returns distilled=false 表示近期无体验可蒸馏（仍会保底落盘快照）
+   */
+  async onConversationCompacted(): Promise<{ distilled: boolean; id?: string }> {
+    const tick = this.engine.snapshot().tick
+    const highlights = [
+      ...this.frameLog.slice(-6).flatMap((f) => f.broadcast.slice(0, 1).map((b) => b.content)),
+      ...this.memory.getWorking().slice(-4),
+    ].slice(0, 6)
+    if (highlights.length === 0) {
+      this.saveNow()
+      return { distilled: false }
+    }
+    this.lastConsolidateTick = tick
+    const id = `autobio-compact-${tick}-${Date.now()}`
+    await this.distillAutobiography({
+      tick,
+      mode: this.lastModeUsed ?? this.engine.selectMode(),
+      highlights,
+      header: `我的阶段自传（会话压缩前沉淀，tick ${tick}）：压缩前我经历了`,
+      id,
+      salience: 0.9,
+    })
+    this.saveNow()
+    this.log.info(`会话压缩触发自传蒸馏（tick ${tick}，${highlights.length} 条体验）`)
+    return { distilled: true, id }
+  }
+
+  /** 自传文本构建与语义层写入（周期蒸馏与压缩蒸馏共享） */
+  private async distillAutobiography(args: {
+    tick: number
+    mode: CognitiveMode
+    highlights: string[]
+    header: string
+    id: string
+    salience?: number
+  }): Promise<string> {
     const needs = this.engine.needsSnapshot()
     const dominant = Object.entries(needs).sort((a, b) => b[1] - a[1])[0]
-    const recent = highlights.length ? `近期经历「${highlights.join('；')}」，` : '近期较为平静，'
+    const recent = args.highlights.length ? `「${args.highlights.join('；')}」，` : '一段较为平静的时期，'
     const examineFirst = this.monitor.examine()[0] ?? '样本不足'
     const text =
-      `我的近况自传（tick ${frame.tick}）：${recent}` +
+      `${args.header}${recent}` +
       `当前${dominant[0]}需求满足度最高（${dominant[1].toFixed(2)}），惯用思考模式成效：${examineFirst}`
-    void this.memory.remember({
-      id: `autobio-${frame.tick}`,
+    const r = await this.memory.remember({
+      id: args.id,
       kind: 'semantic',
       text,
       ts: Date.now(),
-      salience: 0.85,
-      mode: frame.mode,
-    }).catch((err) => this.log.warn(`自传蒸馏写入失败: ${String(err).slice(0, 120)}`))
+      salience: args.salience ?? 0.85,
+      mode: args.mode,
+    })
+    return r.id
   }
 
   /**
@@ -388,6 +440,10 @@ export class LaapKernel {
       modeStats: this.monitor.modeEfficacy(),
       working: this.memory.getWorking(),
       skills: this.memory.listSkills(100).length,
+      skillNames: this.memory
+        .listSkills(100)
+        .map((s) => parseSkillText(s.text)?.name)
+        .filter((n): n is string => !!n),
       restoredFrom: this.restoredFrom,
       frameLog: this.frameLog.map((f) => ({
         tick: f.tick,

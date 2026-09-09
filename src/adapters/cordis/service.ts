@@ -57,6 +57,11 @@ export class LaapService extends Service {
     this.kernel.saveNow()
   }
 
+  /** 会话压缩（compaction/summary）时委托内核：立即自传蒸馏防长程失忆 + 落盘 */
+  onConversationCompacted() {
+    return this.kernel.onConversationCompacted()
+  }
+
   learnSkill(name: string, howto: string) {
     return this.kernel.learnSkill(name, howto)
   }

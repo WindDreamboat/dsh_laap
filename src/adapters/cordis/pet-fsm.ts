@@ -66,9 +66,12 @@ export class PetFsm {
   }
 
   update(i: FsmInput): PetState {
-    // 点击唤醒：本地交互后的宽限期内不显示休息
-    const idle = i.idle && i.now - this.lastPokeAt > POKE_AWAKE_MS
-    const d = PetFsm.desired({ ...i, idle })
+    // 点击唤醒：本地交互后的宽限期内不显示任何休息态（idle 入睡与
+    // intuitive 低能量休息都抑制为待机）——用户刚互动完不应立刻「睡着」
+    const awake = i.now - this.lastPokeAt <= POKE_AWAKE_MS
+    const idle = i.idle && !awake
+    const mapped = PetFsm.desired({ ...i, idle })
+    const d = awake && mapped === 'rest' ? 'idle' : mapped
     if (d === this.state) {
       this.cand = null
     } else if (this.cand !== d) {

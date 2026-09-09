@@ -82,9 +82,20 @@ export function apply(ctx: Context) {
   let turnFailures = new Map<string, string>()   // 工具名 → 首次错误片段
   let turnSuccessSeq: string[] = []               // 成功工具调用序列
   let turnBigrams = new Map<string, number>()     // 相邻工具对 → 本轮出现次数
+  let turnModelErrored = false                    // 本轮模型请求是否已出过故障（重试去重）
 
   // 用户消息：最强的社会性刺激（归属感通道）
   ctx.on('session/event', (session, event) => {
+    // compaction/* 事件由 dsh compaction 插件经 session.append 注入会话日志，
+    // 不在核心 SessionEvent 类型联合中，故用字符串守卫单独识别
+    if ((event as { type?: string }).type === 'compaction/summary') {
+      // 会话历史压缩成功：对话细节即将被摘要替换，立即把近期体验蒸馏为
+      // 阶段自传沉淀语义层（防长程失忆），并强制意识快照落盘。
+      // 这是生命周期信号而非认知刺激，故不经 perceive，避免扰动心境动力学。
+      void ctx.laap.onConversationCompacted().catch((err: unknown) =>
+        ctx.logger('laap').warn(`压缩触发自传蒸馏失败: ${String(err).slice(0, 120)}`))
+      return
+    }
     switch (event.type) {
       case 'user/message': {
         const text = extractText((event as any).data)
@@ -100,6 +111,7 @@ export function apply(ctx: Context) {
         turnFailures = new Map()
         turnSuccessSeq = []
         turnBigrams = new Map()
+        turnModelErrored = false
         ctx.laap.perceive({ type: 'task_start', description: extractText((event as any).data) || '新一轮任务' })
         break
       }
@@ -160,6 +172,29 @@ export function apply(ctx: Context) {
         }
       }
     }
+  })
+
+  // 模型请求故障（限流 / 网络 / 5xx / 上下文超限等）：这是「自己的认知器官」
+  // 出错，比工具失败更直接的压力源 → 注入挫折刺激（复用 tool_error 通道，
+  // 自动归入当前认知模式的成败归因，驱动压力上升 / 反思模式切换）。
+  // 该事件是 waterfall（监听器可返回 {kind:'retry'} 接管重试决策）：我们只
+  // 观测，必须 next() 透传，绝不拦截 compaction 等插件的恢复链路。
+  // 用户主动中止（signal.aborted 或 code=ABORTED）不是环境失败，跳过；
+  // 重试按退避多次发射同一故障，按 turn 去重（每轮只感知一次挫折）。
+  ctx.on('agent/request-error', async (payload: any, next: any) => {
+    try {
+      const failure = payload?.failure
+      const aborted = payload?.signal?.aborted === true || failure?.code === 'ABORTED'
+      if (!aborted && !turnModelErrored) {
+        turnModelErrored = true
+        const code = String(failure?.code ?? 'ERROR')
+        const msg = String(failure?.message ?? '模型请求失败').replace(/\s+/g, ' ').slice(0, 100)
+        ctx.laap.perceive({ type: 'tool_error', tool: '模型请求', message: `${code}: ${msg}` })
+      }
+    } catch {
+      /* 感知异常不得影响模型请求链路 */
+    }
+    return next()
   })
 }
 

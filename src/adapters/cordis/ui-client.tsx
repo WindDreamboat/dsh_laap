@@ -353,6 +353,39 @@ function Timeline({ frames }: { frames: Snap['frameLog'] }) {
   )
 }
 
+/** ── 记忆区：程序性技能（学会了什么）+ 工作记忆（此刻想着什么）──────
+ * 语义/情景自传走 laap_recall 工具供模型内省；面板只投影程序性与工作记忆，
+ * 让用户直观看见「它学会了什么」。数据全部来自内核快照，表现层不重算。 */
+function Memory({ snap }: { snap: Snap }) {
+  const skills = snap.skillNames ?? []
+  const working = snap.working.slice(-4)
+  if (skills.length === 0 && working.length === 0) return null
+  return (
+    <div style={{ marginTop: 8, borderTop: '1px solid #ffffff14', paddingTop: 6 }}>
+      <div style={{ fontSize: 11, color: '#999', marginBottom: 4 }}>
+        记忆{skills.length > 0 ? ` · ${skills.length} 项技能` : ''}
+      </div>
+      {skills.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3, marginBottom: 5 }}>
+          {skills.map((n) => (
+            <span key={n} title={`已沉淀技能：${n}`}
+              style={{ fontSize: 10, padding: '1px 6px', borderRadius: 8, background: '#7c5cff22', color: '#b9a6ff', border: '1px solid #7c5cff44' }}>
+              {n}
+            </span>
+          ))}
+        </div>
+      )}
+      {working.length > 0 && (
+        <div style={{ fontSize: 10, color: '#9a9a9a', lineHeight: 1.6 }}>
+          {working.map((w, i) => (
+            <div key={i} title={w} style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>· {w}</div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 /** ── 雷达悬浮窗（默认形态）─────────────────────────────────────── */
 function RadarWindow({ onPet, onClose }: { onPet: () => void; onClose: () => void }) {
   const snap = useSnap()
@@ -397,6 +430,7 @@ function RadarWindow({ onPet, onClose }: { onPet: () => void; onClose: () => voi
             </div>
           </div>
           <Timeline frames={snap.frameLog} />
+          <Memory snap={snap} />
         </>
       )}
     </div>,

@@ -9,6 +9,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import * as laapService from '../src/adapters/cordis/service-plugin.ts'
+import * as laapHooks from '../src/adapters/cordis/hooks.ts'
 import {
   frameToNarrative,
   loadConsciousness,
@@ -26,6 +27,7 @@ const fiber = await ctx.plugin(laapService, {
   heartbeatMs: 200,
   consolidateEvery: 6, // 缩短蒸馏周期以便本次验证
 })
+await ctx.plugin(laapHooks) // 事件感知通道（session/tools/agent 故障钩子）
 
 await new Promise((r) => setTimeout(r, 500)) // 等若干心跳（tick 推进）
 
@@ -54,11 +56,42 @@ await new Promise((r) => setTimeout(r, 300)) // 等异步蒸馏写入落库
 const autobio = await ctx.laap.memory.recall('我的近况自传', { kind: 'semantic', topk: 3 })
 console.log('自传蒸馏命中:', autobio.find((h) => h.id.startsWith('autobio')) ? '✔' : '✘')
 
+// ── 模型请求故障（agent/request-error waterfall）─────────────────────
+// 真实故障 → 感知一次挫折；同 turn 重试去重；用户中止跳过；监听器必须
+// next() 透传，绝不拦截 compaction 等插件的恢复决策。
+await new Promise((r) => setTimeout(r, 300)) // 等异步自感知（novelty）沉淀
+const evtBefore = ctx.laap.engine.eventTick
+const passthrough = await ctx.waterfall(
+  'agent/request-error',
+  { failure: { code: 'RATE_LIMIT', message: '429 rate limited' }, signal: { aborted: false } } as any,
+  (async () => 'NEXT') as any,
+)
+console.log('request-error waterfall 透传 next:', passthrough === 'NEXT' ? '✔' : `✘（${String(passthrough)}）`)
+await new Promise((r) => setTimeout(r, 300)) // 故障刺激 + 可能的异步新异性自感知都沉淀
+const d1 = ctx.laap.engine.eventTick - evtBefore
+console.log('真实模型故障产生意识刺激:', d1 >= 1 ? `✔（eventTick +${d1}）` : '✘（无刺激）')
+// 同一轮重试（turn 去重）+ 用户主动中止（aborted 跳过）：均不得再产生刺激
+const evtMid = ctx.laap.engine.eventTick
+await ctx.waterfall(
+  'agent/request-error',
+  { failure: { code: 'RATE_LIMIT', message: 'retry again' }, signal: { aborted: false } } as any,
+  (async () => 'NEXT') as any,
+)
+await ctx.waterfall(
+  'agent/request-error',
+  { failure: { code: 'ABORTED', message: 'aborted by user' }, signal: { aborted: true } } as any,
+  (async () => 'NEXT') as any,
+)
+await new Promise((r) => setTimeout(r, 300))
+const d2 = ctx.laap.engine.eventTick - evtMid
+console.log('重试去重 / 用户中止不再刺激:', d2 === 0 ? '✔' : `✘（eventTick +${d2}）`)
+
 // UI 快照：可 JSON 序列化（rpc 通道只传 JSON）且字段完整
 const ui = ctx.laap.uiSnapshot()
 const uiJson = JSON.parse(JSON.stringify(ui))
 console.log('UI 快照序列化:', Array.isArray(uiJson.frameLog) && uiJson.state && uiJson.drives && uiJson.emotion ? '✔' : '✘')
 console.log('帧历史环长度:', uiJson.frameLog.length)
+console.log('快照技能名投影:', ui.skillNames.includes('心跳验证') ? `✔（${ui.skillNames.join(' / ')}）` : '✘')
 
 const tickBefore = ctx.laap.engine.snapshot().tick
 await fiber.dispose() // 触发 effect 清理：停心跳 + 关 zvec

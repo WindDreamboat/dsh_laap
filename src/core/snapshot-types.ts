@@ -46,10 +46,12 @@ export interface UiSnapshot {
   idleSeconds: number
   monitor: UiSnapshotMonitor
   modeStats: Record<string, { winRate: number; trials: number }>
-  /** 工作记忆（当前意识流要点） */
+  /** 工作记忆（当前意识流要点，最新在后） */
   working: string[]
   /** 已沉淀技能数 */
   skills: number
+  /** 已沉淀技能名清单（程序性记忆的可见投影，按存储顺序） */
+  skillNames: string[]
   /** 意识续接来源（冷生意识为 null） */
   restoredFrom: { savedAt: number; tick: number } | null
   frameLog: UiSnapshotFrame[]
