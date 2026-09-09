@@ -29,7 +29,9 @@
     }
   },
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.web.json",
+    "typecheck:host": "tsc --noEmit",
+    "typecheck:web": "tsc -p tsconfig.web.json",
     "build:client": "node scripts/build-client.mjs",
     "sim": "node --experimental-strip-types test/sim.ts",
     "patch": "dsh web --patch ./cordis.patch.yml"
