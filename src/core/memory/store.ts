@@ -12,6 +12,7 @@
  */
 import { ZVecCollectionSchema, ZVecCreateAndOpen, ZVecDataType, ZVecOpen } from '@zvec/zvec'
 import { HASH_DIM, type EmbedAsyncFn } from './embed.ts'
+import type { MemoryPort } from '../ports.ts'
 
 export type MemoryKind = 'episodic' | 'semantic' | 'procedural'
 
@@ -50,7 +51,7 @@ function buildSchema(dim: number) {
   })
 }
 
-export class MemoryLayer {
+export class MemoryLayer implements MemoryPort {
   private col: ReturnType<typeof ZVecCreateAndOpen>
   private embed: EmbedAsyncFn
   /** 工作记忆：容量受限的环形缓冲 */

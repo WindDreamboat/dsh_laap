@@ -15,7 +15,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { homedir } from 'node:os'
 import { LaapConfigSpec, type LaapPluginConfig } from './config.ts'
 import { LaapService } from './service.ts'
-import { HASH_DIM, hashEmbed, openaiEmbed, type EmbedAsyncFn } from './memory/embed.ts'
+import { HASH_DIM, hashEmbed, openaiEmbed, type EmbedAsyncFn } from './core/memory/embed.ts'
 
 export const name = 'laap-service'
 export const Config = LaapConfigSpec

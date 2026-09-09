@@ -1,0 +1,67 @@
+/**
+ * 内核端口（Ports）—— 依赖反转原则（DIP）的抽象层
+ *
+ * LaapKernel 不直接依赖任何具体宿主（cordis logger、全局定时器、zvec、嵌入 API），
+ * 它只依赖这里定义的接口；具体实现由外层适配器注入：
+ *  - dsh 宿主：src/service.ts 用 cordis ctx.logger / ctx.effect 实现 KernelLogger / 生命周期；
+ *  - 记忆：src/core/memory/store.ts 的 zvec MemoryLayer 实现 MemoryPort；
+ *  - 嵌入：src/core/memory/embed.ts 的 hashEmbed / openaiEmbed 即 EmbedAsyncFn 实现。
+ *
+ * 本文件零运行时依赖（类型仅 import type），可在任意 JS 运行时被内核引用。
+ */
+import type { MemoryDoc, MemoryKind, RecallResult } from './memory/store.ts'
+
+/** 日志端口：内核只需要 info/warn 两级（cordis console/任意宿主均可适配） */
+export interface KernelLogger {
+  info(msg: string): void
+  warn(msg: string): void
+}
+
+/**
+ * 调度端口：周期性后台任务（心跳）。
+ * 返回值是清理函数（停止该定时器），由内核在 dispose 时调用，
+ * 从而不直接持有全局 setInterval 句柄、也不认识 cordis 的 ctx.effect。
+ */
+export interface KernelScheduler {
+  setInterval(cb: () => void, ms: number): () => void
+}
+
+/**
+ * 记忆端口：内核消费的长期/工作记忆能力。
+ * zvec 实现见 memory/store.ts 的 MemoryLayer（implements MemoryPort）；
+ * 测试或别的向量后端可提供自己的实现。
+ */
+export interface MemoryPort {
+  remember(doc: MemoryDoc): Promise<{ id: string; deduplicated?: string }>
+  recall(query: string, opts?: { topk?: number; kind?: MemoryKind }): Promise<RecallResult[]>
+  listSkills(limit?: number): MemoryDoc[]
+  pushWorking(item: string, archiveTo?: { id: string; ts: number }): void
+  getWorking(): string[]
+  close(): void
+}
+
+/** 可一次性注入的宿主能力（全部可选，缺省走平台默认实现） */
+export interface KernelPorts {
+  logger?: KernelLogger
+  scheduler?: KernelScheduler
+}
+
+/** 默认日志：console，带 [laap] 前缀（脱离 dsh 单独运行内核时使用） */
+export const consoleLogger: KernelLogger = {
+  info: (msg) => console.log(`[laap] ${msg}`),
+  warn: (msg) => console.warn(`[laap] ${msg}`),
+}
+
+/** 静默日志：测试用，不产生任何输出 */
+export const silentLogger: KernelLogger = {
+  info: () => {},
+  warn: () => {},
+}
+
+/** 默认调度：全局 setInterval / clearInterval（Node 与浏览器均有） */
+export const defaultScheduler: KernelScheduler = {
+  setInterval(cb, ms) {
+    const handle = setInterval(cb, ms)
+    return () => clearInterval(handle)
+  },
+}

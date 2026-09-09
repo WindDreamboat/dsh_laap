@@ -6,15 +6,17 @@
  * 运行：node --experimental-strip-types test/host.ts
  */
 import { Context } from '@deepseek-ai/cordis'
-import { rmSync } from 'node:fs'
+import { rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import * as laapService from '../src/service-plugin.ts'
-import { frameToNarrative } from '../src/consciousness/bus.ts'
-import { loadConsciousness, statePath } from '../src/consciousness/persist.ts'
-import { ConsciousnessEngine } from '../src/consciousness/state.ts'
-import { MetacognitiveMonitor } from '../src/consciousness/monitor.ts'
-import { restoreConsciousness } from '../src/consciousness/persist.ts'
-import { existsSync } from 'node:fs'
+import {
+  frameToNarrative,
+  loadConsciousness,
+  statePath,
+  restoreConsciousness,
+  ConsciousnessEngine,
+  MetacognitiveMonitor,
+} from '../src/core/index.ts'
 
 const DB = `${tmpdir()}/laap-host-zvec-${Date.now()}`
 

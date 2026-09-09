@@ -8,6 +8,9 @@
     ".": {
       "default": "./src/index.ts"
     },
+    "./core": {
+      "default": "./src/core/index.ts"
+    },
     "./client": {
       "types": "./src/ui-client.tsx",
       "default": "./lib/client.js"
