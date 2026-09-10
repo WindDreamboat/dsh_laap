@@ -66,14 +66,18 @@ export function apply(ctx: Context) {
     },
     async execute(args) {
       const id = `mem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-      await ctx.laap.memory.remember({
+      const res = await ctx.laap.memory.remember({
         id,
         kind: args.kind as 'episodic' | 'semantic',
         text: args.text,
         ts: Date.now(),
         salience: Math.min(1, Math.max(0, args.salience ?? 0.5)),
       })
-      return { id, narrative: `已写入${args.kind === 'semantic' ? '语义' : '情景'}记忆（${id}）` }
+      // semantic 层发生同义合并时必须告知模型：旧表述已被删旧写新，库里不是又多了一份
+      const merged = res.deduplicated
+        ? `（检测到语义重复，已合并旧记忆 ${res.deduplicated}：删旧写新，库内仍只有一份）`
+        : ''
+      return { id: res.id, narrative: `已写入${args.kind === 'semantic' ? '语义' : '情景'}记忆（${res.id}）${merged}` }
     },
   }))
 

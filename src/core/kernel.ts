@@ -45,6 +45,11 @@ export interface LaapKernelOptions {
   embed?: EmbedAsyncFn
   /** 嵌入维度（必须与 embed 输出一致；换维度需删旧库重建） */
   embedDim?: number
+  /**
+   * 语义层去重阈值（rawScore；0 = 用 store 默认 0.92 = hash 口径）。
+   * 神经嵌入（bge-m3）由适配层按实测空档（同义写法 0.79~0.95 / 异义 ≤0.72）配 0.75。
+   */
+  semanticDedupThreshold?: number
   /** 记忆端口：缺省按 dbPath+embed 组装 zvec MemoryLayer；可注入假实现/别的后端 */
   memory?: MemoryPort
   /** 日志端口（默认 console，带 [laap] 前缀） */
@@ -105,7 +110,9 @@ export class LaapKernel {
     this.monitor = new MetacognitiveMonitor()
     const embed = opts.embed ?? hashEmbed
     const dim = opts.embedDim ?? HASH_DIM
-    this.memory = opts.memory ?? new MemoryLayer(opts.dbPath, embed, dim)
+    this.memory = opts.memory ?? new MemoryLayer(opts.dbPath, embed, dim, {
+      semanticDedupThreshold: opts.semanticDedupThreshold,
+    })
     this.consolidateEvery = opts.consolidateEvery ?? 120
     this.saveEvery = opts.saveEvery ?? 20
     this.noveltyThreshold = opts.noveltyThreshold ?? 0.45

@@ -72,6 +72,10 @@ export function apply(ctx: Context, raw?: Partial<LaapPluginConfig>) {
   // patch 显式配 >0 视为手动调参；env LAAP_RECALL_THRESHOLD=0 可显式关闭。
   const envRecall = envNum('LAAP_RECALL_THRESHOLD')
   const recallDefault = embedding.provider === 'hash' ? 0 : 0.45
+  // 语义去重阈值：hash 袋近乎逐字重复才 ≥0.92；bge-m3 实测同一事实的不同写法
+  // （含扩写长句）0.79~0.95、不同事实（含同域近似偏好）≤0.72 → 空档取 0.75。
+  const envDedup = envNum('LAAP_SEMANTIC_DEDUP_THRESHOLD')
+  const dedupDefault = embedding.provider === 'hash' ? 0.92 : 0.75
   const config: LaapPluginConfig = {
     dbPath: envStr('LAAP_ZVEC_PATH') ?? raw?.dbPath ?? `${homedir()}/.dsh-laap/zvec-memory`,
     sensitivity: envNum('LAAP_SENSITIVITY') ?? raw?.sensitivity ?? 1,
@@ -80,11 +84,15 @@ export function apply(ctx: Context, raw?: Partial<LaapPluginConfig>) {
     saveEvery: raw?.saveEvery ?? 20,
     noveltyThreshold: envNum('LAAP_NOVELTY_THRESHOLD') ?? raw?.noveltyThreshold ?? 0.45,
     recallThreshold: envRecall ?? (raw?.recallThreshold && raw.recallThreshold > 0 ? raw.recallThreshold : recallDefault),
+    // 0（schema 默认）= 未显式配置 → 按 provider 取自动口径；env 优先级最高
+    semanticDedupThreshold:
+      envDedup ?? (raw?.semanticDedupThreshold && raw.semanticDedupThreshold > 0 ? raw.semanticDedupThreshold : dedupDefault),
     autoEpisodic: raw?.autoEpisodic ?? true,
     embedding,
   }
   if (envNum('LAAP_NOVELTY_THRESHOLD') !== undefined) envOverrides.push(`noveltyThreshold=${config.noveltyThreshold}`)
   if (envRecall !== undefined) envOverrides.push(`recallThreshold=${config.recallThreshold}`)
+  if (envDedup !== undefined) envOverrides.push(`semanticDedupThreshold=${config.semanticDedupThreshold}`)
   if (envOverrides.length) log.info(`检测到环境变量覆写：${envOverrides.join('，')}（.env/环境变量优先级高于 patch 配置）`)
 
   // ── 嵌入提供者选择 ─────────────────────────────────────────────
@@ -135,10 +143,11 @@ export function apply(ctx: Context, raw?: Partial<LaapPluginConfig>) {
     saveEvery: config.saveEvery,
     noveltyThreshold: config.noveltyThreshold,
     recallThreshold: config.recallThreshold,
+    semanticDedupThreshold: config.semanticDedupThreshold,
     autoEpisodic: config.autoEpisodic,
     embed,
     embedDim: dim,
   })
-  ctx.logger('laap').info(`意识内核已启动（zvec: ${config.dbPath}｜嵌入: ${config.embedding.provider}${config.embedding.provider === 'hash' ? '' : `/${config.embedding.model}`}｜召回闸门: ${config.recallThreshold > 0 ? config.recallThreshold : '关'}）`)
+  ctx.logger('laap').info(`意识内核已启动（zvec: ${config.dbPath}｜嵌入: ${config.embedding.provider}${config.embedding.provider === 'hash' ? '' : `/${config.embedding.model}`}｜召回闸门: ${config.recallThreshold > 0 ? config.recallThreshold : '关'}｜语义去重: ${config.semanticDedupThreshold}）`)
 }
 

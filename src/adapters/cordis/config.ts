@@ -17,6 +17,8 @@ export interface LaapPluginConfig {
   saveEvery: number
   noveltyThreshold: number
   recallThreshold: number
+  /** 语义层去重阈值；0 = 按 provider 自动（hash 0.92 / 神经嵌入 0.75） */
+  semanticDedupThreshold: number
   autoEpisodic: boolean
   embedding: {
     provider: 'hash' | 'openai' | 'ollama'
@@ -42,6 +44,8 @@ export const LaapConfigSpec = z.object({
   noveltyThreshold: z.number().min(0).max(1).default(0.45),
   /** 内省召回相关性闸门：laap_recall 时 rawScore 低于此值不浮现；0 = 不裁剪（hash 必须为 0），真语义嵌入建议 0.45 */
   recallThreshold: z.number().min(0).max(1).default(0),
+  /** 语义层去重阈值：写入 semantic 时近邻超此值则删旧写新；0 = 按 provider 自动（hash 0.92 / bge-m3 等神经嵌入 0.75） */
+  semanticDedupThreshold: z.number().min(0).max(1).default(0),
   /** 新异事件自动归档为情景记忆（节流；false = 只靠模型主动 laap_remember） */
   autoEpisodic: z.boolean().default(true),
   /** 嵌入提供者 */

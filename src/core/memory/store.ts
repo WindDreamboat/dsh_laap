@@ -59,9 +59,26 @@ export class MemoryLayer implements MemoryPort {
   private workingCap = 7
   /** 程序记忆内存索引（技能名 → 文档），启动时从 zvec 重建 */
   private skills = new Map<string, MemoryDoc>()
+  /**
+   * 语义层去重阈值（rawScore）：写入 semantic 前查 top-1 近邻，超阈值视为同一事实，
+   * 删旧写新。口径随嵌入模型标定：
+   *  - hash 袋嵌入默认 0.92（只有近乎逐字重复才够得着）；
+   *  - 神经嵌入（bge-m3 实测）同一事实的不同写法 0.79~0.95、不同事实 ≤0.72，
+   *    安全空档取 0.75。由适配层按 provider 注入，内核默认仍为 hash 口径。
+   */
+  private readonly semanticDedupThreshold: number
 
-  constructor(dbPath: string, embed: EmbedAsyncFn, dim = HASH_DIM) {
+  constructor(
+    dbPath: string,
+    embed: EmbedAsyncFn,
+    dim = HASH_DIM,
+    opts: { semanticDedupThreshold?: number } = {},
+  ) {
     this.embed = embed
+    // 0 或未传 = 用 hash 口径默认（阈值 0 会让任意写入都误判重复，绝不采用）
+    this.semanticDedupThreshold = opts.semanticDedupThreshold && opts.semanticDedupThreshold > 0
+      ? opts.semanticDedupThreshold
+      : 0.92
     // 存在则打开（WAL 保证崩溃恢复），否则新建
     try {
       this.col = ZVecOpen(dbPath)
@@ -76,8 +93,8 @@ export class MemoryLayer implements MemoryPort {
     let deduplicated: string | undefined
     if (doc.kind === 'semantic') {
       const near = await this.recall(doc.text, { kind: 'semantic', topk: 1 })
-      // 原始相似度 >0.92（哈希嵌入口径）视为同一事实：删旧写新，语义层不膨胀
-      if (near[0] && near[0].id !== doc.id && near[0].rawScore > 0.92) {
+      // 超过去重阈值视为同一事实：删旧写新，语义层不膨胀（阈值随嵌入模型标定）
+      if (near[0] && near[0].id !== doc.id && near[0].rawScore > this.semanticDedupThreshold) {
         deduplicated = near[0].id
         try { this.col.deleteSync(deduplicated) } catch { /* 旧项可能已被并发删除 */ }
       }
