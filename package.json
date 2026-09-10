@@ -1,6 +1,6 @@
 {
   "name": "dsh-laap",
-  "version": "2.4.1",
+  "version": "2.5.0",
   "description": "LAAP 意识认知架构的 DeepSeek Harness 插件：五维意识动力学 + PSI 需求驱动 + 元认知监控 + zvec 向量记忆",
   "type": "module",
   "main": "./src/adapters/cordis/index.ts",
