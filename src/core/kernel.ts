@@ -427,20 +427,31 @@ export class LaapKernel {
 
   /**
    * 内省召回（模型经 laap_recall 使用的意识层入口）：
-   * 在原始向量召回之上加相关性闸门——rawScore 低于 recallThreshold 的命中
-   * 判为「没有记忆浮现」，避免把不相关记忆当成回忆结果（真实语义嵌入下，
-   * 无答案查询与真目标之间存在分数空档，闸门让内核能回答「我不知道/没经历过」）。
-   * 情景层闸门更高（recallThreshold + EPISODIC_GATE_MARGIN）：帧叙事容易与查询
-   * 字面撞车（用户刚下达的指令原文被帧存档，再查同一问题即自指命中），实测
-   * 指令自指 0.54~0.55、真实经历回忆 0.63，语义闸门 0.45 上留 0.15 余量可分。
+   * 在原始向量召回之上加两道闸门——
+   * ① 相关性闸门：rawScore 低于 recallThreshold 判为「没有记忆浮现」，
+   *    让内核能回答「我不知道/没经历过」（bge-m3 实测：无关查询 ≤0.34、
+   *    真实经历换说法 0.54~0.63，0.45 正居空档）；
+   * ② 同回合时近窗（仅 episodic）：排除 ts 在 EPISODIC_RECENT_MS 内的情景帧。
+   *    自指危害的机制是「用户本回合刚说的话被帧存档，模型同回合 laap_recall
+   *    同一个问题时命中了自己的提问原文」——这是时间问题不是语义问题：逐字
+   *    自指 0.71 能越过任何高门，而真事换说法只有 0.54~0.60 反会被高门误杀
+   *    （v2.5.0 的 +0.15 分层门即因此被真实数据证伪）。时近窗后：同回合自指
+   *    不可见；用户几十分钟后再问同一事，旧帧作为「你上次问过」正常浮现
+   *    （这正是想要的记忆）。当下 7 帧在工作记忆环/frameLog，不经此入口。
    * 新异性检测（detectNovelty，需原始最近邻距离）与技能语义去重（learnSkill，
    * 自带 SKILL_DUP_RAW 严阈值）不经此闸，直接走 memory.recall。
    */
   async recallMemories(query: string, opts: { kind?: MemoryKind; topk?: number } = {}): Promise<RecallResult[]> {
     const hits = await this.memory.recall(query, { kind: opts.kind, topk: opts.topk ?? 5 })
+    // 闸门显式关闭（recallThreshold=0）= 整体旁路，原始召回不裁剪（hash 默认口径）
     if (this.recallThreshold <= 0) return hits
-    const episodicGate = Math.min(1, this.recallThreshold + EPISODIC_GATE_MARGIN)
-    return hits.filter((h) => h.rawScore >= (h.kind === 'episodic' ? episodicGate : this.recallThreshold))
+    const now = Date.now()
+    return hits.filter((h) => h.rawScore >= this.recallThreshold && !this.isSameTurnEpisodic(h, now))
+  }
+
+  /** 情景帧同回合时近窗判定（ts 缺失的历史文档不排除，保守放行） */
+  private isSameTurnEpisodic(h: RecallResult, now = Date.now()): boolean {
+    return h.kind === 'episodic' && h.ts > 0 && now - h.ts < EPISODIC_RECENT_MS
   }
 
   private eventDigest(e: CognitiveEvent): string {
@@ -525,10 +536,12 @@ export class LaapKernel {
 /** 程序性记忆语义去重阈值（真嵌入口径：仅近乎同义改写命中；同名归一化是主路径） */
 const SKILL_DUP_RAW = 0.9
 /**
- * 情景层内省闸门相对 recallThreshold 的余量：
- * bge-m3 实测指令自指 0.54~0.55、真实经历 0.63（语义闸门 0.45），0.15 居中可分。
+ * 情景记忆同回合时近窗（毫秒）：laap_recall 时排除本窗内新存档的 episodic，
+ * 治「用户本回合提问原文被帧存档→同回合召回命中自己的提问」自指。
+ * 取值依据：覆盖单个对话回合（模型工具调用通常 <90s）且不误伤跨回合回忆；
+ * 当下内容在工作记忆环（7 帧）/frameLog 中另有入口。
  */
-const EPISODIC_GATE_MARGIN = 0.15
+const EPISODIC_RECENT_MS = 90_000
 /** 单条技能合并后的要点上限，防止无限增长 */
 const MAX_SKILL_STEPS = 12
 

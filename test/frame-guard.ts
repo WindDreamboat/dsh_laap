@@ -6,8 +6,10 @@
  *    挤出即弃——旧实现稳态下每帧落库，情景层被状态流水账淹没。
  *    归档意图属于入环项自己（平行数组），外部帧被后续内省帧挤出也不丢。
  * B. episodicCap：情景记忆容量上界，超限 FIFO 淘汰最旧；启动重建索引并 prune。
- * C. 内省召回分层闸门：episodic 闸门 = recallThreshold + 0.15，
- *    防止用户指令原文被帧存档后造成的自指命中（实测自指 0.54~0.55、真事 0.63）。
+ * C. 内省召回双闸门：①相关性统一阈值（不再给 episodic 加分——bge-m3 实测
+ *    逐字自指 0.71、真事换说法仅 0.54~0.60，加分门会误杀真事且拦不住逐字自指）；
+ *    ②同回合时近窗：90s 内新存档的 episodic 不浮现（治本回合提问帧自指），
+ *    semantic 不受时近窗影响；recallThreshold=0 时闸门整体旁路。
  * D. hooks 入流过滤：user/message 仅 source.kind='user' 才感知
  *    （dsh 注入的 runtime-context 快照 source.kind='plugin'）；
  *    工具错误对象归一化（{code,message} 不再变成 [object Object]）。
@@ -41,16 +43,17 @@ const countKind = (col: MemoryLayer, kind: string) => {
   return n
 }
 
-// ── 合成嵌入：查询 Q/A 与 EP_HI 完全同向（1.0）；与 AP 余弦 0.78 ──
+// ── 合成嵌入：查询 Q 与 EPRECENT 完全同向（1.0）；MID/EPAGED 余弦 0.78；EPLOW 余弦 0.60 ──
 const A = [1, 0, 0, 0]
 const AP = [0.78, Math.sqrt(1 - 0.78 * 0.78), 0, 0]
 const O = [0, 0, 0, 1]
-const B = [0.6, 0, 0.8, 0] // 与 O 正交：两条 semantic 测试事实不得被语义去重合并
+const B = [0.6, 0, 0.8, 0] // 与 A 余弦 0.60；两条 semantic 测试事实用 O/B 避免被去重合并
 const synthEmbed: EmbedAsyncFn = async (texts: string[]) =>
   texts.map((t) =>
-    t.startsWith('Q') || t.startsWith('EPHI') ? A
-      : t.startsWith('MID') || t.startsWith('EPLO') ? AP
-        : t.includes('偏好事实二') ? B : O)
+    t.startsWith('Q') || t.startsWith('EPRECENT') ? A
+      : t.startsWith('EPLOW') ? B
+        : t.startsWith('MID') || t.startsWith('EPAGED') ? AP
+          : t.includes('偏好事实二') ? B : O)
 
 const now = Date.now()
 const DB_FRAME = `${tmpdir()}/laap-frame-${now}`
@@ -133,20 +136,39 @@ try {
   uncap.close()
   await sleep(150)
 
-  // ══ C. 内省召回分层闸门 ══════════════════════════════════════════
+  // ══ C. 内省召回双闸门（相关门 + 同回合时近窗）════════════════════
   const kg = createKernel(
     { logger: silentLogger },
     { dbPath: DB_GATE, heartbeatMs: 0, consolidateEvery: 9999, embed: synthEmbed, embedDim: 4, recallThreshold: 0.7 },
   )
-  await kg.memory.remember({ id: 'ep-lo', kind: 'episodic', text: 'EPLO-用户刚下达的指令原文（被帧存档）', ts: now, salience: 0.3 }) // 与 Q 余弦 0.78
-  await kg.memory.remember({ id: 'ep-hi', kind: 'episodic', text: 'EPHI-去年秋天在京都看红叶的真实经历', ts: now, salience: 0.5 })   // 与 Q 余弦 1.0
-  await kg.memory.remember({ id: 'sem-mid', kind: 'semantic', text: 'MID-用户偏好简洁回答的自我事实', ts: now, salience: 0.8 })     // 与 Q 余弦 0.78
+  // 本回合刚存档：与查询完全同向（1.0），但必须被时近窗排除（自指治本）
+  await kg.memory.remember({ id: 'ep-recent', kind: 'episodic', text: 'EPRECENT-用户本回合刚问的逐字问题帧', ts: now, salience: 0.3 })
+  // 跨回合旧帧（120s 前）：0.78 过相关门且已出窗 → 这是「你上次问过」的真记忆
+  await kg.memory.remember({ id: 'ep-aged', kind: 'episodic', text: 'EPAGED-十几分钟前真实经历的换说法回忆', ts: now - 120000, salience: 0.5 })
+  // 跨回合但弱相关 0.60：出窗仍被相关门拦
+  await kg.memory.remember({ id: 'ep-aged-low', kind: 'episodic', text: 'EPLOW-无关的旧经历一条', ts: now - 120000, salience: 0.3 })
+  // semantic 即时新写也浮现（时近窗只管 episodic；偏好/自传随时可查）
+  await kg.memory.remember({ id: 'sem-mid', kind: 'semantic', text: 'MID-用户偏好简洁回答的自我事实', ts: now, salience: 0.8 })
   const surfaced = await kg.recallMemories('Q-随便一个查询', { topk: 5 })
   const ids = surfaced.map((h) => h.id).sort()
-  assert(ids.includes('ep-hi'), 'episodic 1.0 高相关：过 0.85 情景闸门浮现')
-  assert(ids.includes('sem-mid'), 'semantic 0.78：过 0.70 语义闸门浮现')
-  assert(!ids.includes('ep-lo'), 'episodic 0.78 自指命中：被 0.85 情景闸门拦截（指令帧不再污染回忆）')
+  assert(ids.includes('ep-aged'), '跨回合旧帧 0.78：过相关门且出时近窗 → 浮现（真事换说法不再被误杀）')
+  assert(ids.includes('sem-mid'), 'semantic 0.78：过相关门，且不受时近窗影响')
+  assert(!ids.includes('ep-recent'), '本回合帧即使 1.0 逐字命中：时近窗排除（指令帧自指治本）')
+  assert(!ids.includes('ep-aged-low'), '跨回合但 0.60 弱相关：仍被相关门拦')
   kg.dispose()
+  await sleep(100)
+
+  // 闸门关闭（recallThreshold=0）：整体旁路，本回合帧也走原始召回
+  const DB_GATE_RAW = `${tmpdir()}/laap-gate-raw-${now}`
+  ALL_DBS.push(DB_GATE_RAW)
+  const kgr = createKernel(
+    { logger: silentLogger },
+    { dbPath: DB_GATE_RAW, heartbeatMs: 0, consolidateEvery: 9999, embed: synthEmbed, embedDim: 4, recallThreshold: 0 },
+  )
+  await kgr.memory.remember({ id: 'ep-raw', kind: 'episodic', text: 'EPRECENT-原始召回口径下即时可见', ts: now, salience: 0.3 })
+  const rawHits = await kgr.recallMemories('Q-随便一个查询', { topk: 3 })
+  assert(rawHits.some((h) => h.id === 'ep-raw'), 'recallThreshold=0：闸门整体旁路（hash 默认口径不变）')
+  kgr.dispose()
   await sleep(100)
 
   // ══ D. hooks：source 过滤 + 错误归一化（真实 Cordis 宿主）═════════
