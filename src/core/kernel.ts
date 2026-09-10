@@ -12,7 +12,7 @@
 import { ConsciousnessEngine } from './consciousness/state.ts'
 import { CognitiveBus, frameToNarrative } from './consciousness/bus.ts'
 import { MetacognitiveMonitor } from './consciousness/monitor.ts'
-import { MemoryLayer, type MemoryKind } from './memory/store.ts'
+import { MemoryLayer, type MemoryKind, type RecallResult } from './memory/store.ts'
 import { HASH_DIM, hashEmbed, type EmbedAsyncFn } from './memory/embed.ts'
 import { captureConsciousness, loadConsciousness, restoreConsciousness, saveConsciousness } from './consciousness/persist.ts'
 import type { CognitiveEvent, CognitiveMode, ConsciousnessFrame, NeedsVector } from './consciousness/types.ts'
@@ -32,6 +32,13 @@ export interface LaapKernelOptions {
   saveEvery?: number
   /** 新异性阈值：与最近记忆 rawScore 低于此值视为新奇（hash 口径 ≈0.45，真嵌入建议 0.8） */
   noveltyThreshold?: number
+  /**
+   * 内省召回相关性闸门：模型经 laap_recall 召回时，rawScore 低于此值的记忆不浮现（0 = 不裁剪）。
+   * hash 嵌入分数尺度不同（真目标仅 0.04~0.25、与噪声重叠），hash 下必须为 0；
+   * 真语义嵌入（bge-m3）A/B 实测无答案查询 top≤0.40、真目标≥0.53，建议 0.45。
+   * 只作用于内省入口 recallMemories；新异性检测/技能去重走原始最近邻，不经此闸。
+   */
+  recallThreshold?: number
   /** 自动经历归档：新异事件自动写入情景记忆（节流），false = 只靠模型主动记 */
   autoEpisodic?: boolean
   /** 嵌入函数（默认哈希袋；可注入 openaiEmbed） */
@@ -75,6 +82,8 @@ export class LaapKernel {
 
   /** 新异性检测参数与节流状态 */
   private noveltyThreshold: number
+  /** 内省召回相关性闸门（rawScore；0=不裁剪；仅 recallMemories 内省入口生效） */
+  private recallThreshold: number
   private autoEpisodic: boolean
   private noveltyInFlight = false
   private lastAutoEpisodicTick = -100
@@ -100,6 +109,7 @@ export class LaapKernel {
     this.consolidateEvery = opts.consolidateEvery ?? 120
     this.saveEvery = opts.saveEvery ?? 20
     this.noveltyThreshold = opts.noveltyThreshold ?? 0.45
+    this.recallThreshold = opts.recallThreshold ?? 0
     this.autoEpisodic = opts.autoEpisodic ?? true
 
     // ── 存在连续性：有快照则续接意识身份，而不是重生 ──
@@ -394,6 +404,19 @@ export class LaapKernel {
   /** 按当前情境检索适用技能 */
   async matchSkills(context: string, topk = 3) {
     return this.memory.recall(context, { kind: 'procedural' as MemoryKind, topk })
+  }
+
+  /**
+   * 内省召回（模型经 laap_recall 使用的意识层入口）：
+   * 在原始向量召回之上加相关性闸门——rawScore 低于 recallThreshold 的命中
+   * 判为「没有记忆浮现」，避免把不相关记忆当成回忆结果（真实语义嵌入下，
+   * 无答案查询与真目标之间存在分数空档，闸门让内核能回答「我不知道/没经历过」）。
+   * 新异性检测（detectNovelty，需原始最近邻距离）与技能语义去重（learnSkill，
+   * 自带 SKILL_DUP_RAW 严阈值）不经此闸，直接走 memory.recall。
+   */
+  async recallMemories(query: string, opts: { kind?: MemoryKind; topk?: number } = {}): Promise<RecallResult[]> {
+    const hits = await this.memory.recall(query, { kind: opts.kind, topk: opts.topk ?? 5 })
+    return this.recallThreshold > 0 ? hits.filter((h) => h.rawScore >= this.recallThreshold) : hits
   }
 
   private eventDigest(e: CognitiveEvent): string {

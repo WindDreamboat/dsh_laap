@@ -16,6 +16,7 @@ export interface LaapPluginConfig {
   consolidateEvery: number
   saveEvery: number
   noveltyThreshold: number
+  recallThreshold: number
   autoEpisodic: boolean
   embedding: {
     provider: 'hash' | 'openai' | 'ollama'
@@ -39,6 +40,8 @@ export const LaapConfigSpec = z.object({
   saveEvery: z.natural().default(20),
   /** 新异性阈值：与最近记忆相似度低于此值视为新奇（hash 口径 0.45，真嵌入建议 0.8） */
   noveltyThreshold: z.number().min(0).max(1).default(0.45),
+  /** 内省召回相关性闸门：laap_recall 时 rawScore 低于此值不浮现；0 = 不裁剪（hash 必须为 0），真语义嵌入建议 0.45 */
+  recallThreshold: z.number().min(0).max(1).default(0),
   /** 新异事件自动归档为情景记忆（节流；false = 只靠模型主动 laap_remember） */
   autoEpisodic: z.boolean().default(true),
   /** 嵌入提供者 */

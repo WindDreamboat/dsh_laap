@@ -7,8 +7,8 @@
  * 配置优先级：环境变量（dsh 宿主自动加载启动目录与 ~/.dsh 下的 .env）
  *   > cordis.patch.yml 的 config 字段（Schema 校验，见 src/adapters/cordis/config.ts）> 内置默认值。
  * 支持的环境变量：LAAP_ZVEC_PATH / LAAP_SENSITIVITY / LAAP_HEARTBEAT_MS /
- *   LAAP_NOVELTY_THRESHOLD / LAAP_EMBED_PROVIDER / LAAP_EMBED_BASE_URL /
- *   LAAP_EMBED_MODEL / LAAP_EMBED_DIMENSION / LAAP_EMBED_API_KEY_ENV。
+ *   LAAP_NOVELTY_THRESHOLD / LAAP_RECALL_THRESHOLD / LAAP_EMBED_PROVIDER /
+ *   LAAP_EMBED_BASE_URL / LAAP_EMBED_MODEL / LAAP_EMBED_DIMENSION / LAAP_EMBED_API_KEY_ENV。
  * 仓库默认 hash 嵌入（离线 0 依赖）；本地 .env 可切换 ollama/openai 而不改仓库文件。
  */
 import type { Context } from '@deepseek-ai/cordis'
@@ -67,6 +67,11 @@ export function apply(ctx: Context, raw?: Partial<LaapPluginConfig>) {
   if (envDim !== undefined && envDim >= 8) { embedding.dimension = envDim; envOverrides.push(`dimension=${envDim}`) }
   if (envStr('LAAP_EMBED_API_KEY_ENV')) { embedding.apiKeyEnv = envStr('LAAP_EMBED_API_KEY_ENV')!; envOverrides.push('apiKeyEnv') }
 
+  // 召回闸门默认值按嵌入尺度分档：hash 真目标仅 0.04~0.25 且与噪声重叠，
+  // 开闸会误杀全部召回 → 0（关闭）；真语义嵌入 A/B 实测无答案 top≤0.40、真目标≥0.53 → 0.45。
+  // patch 显式配 >0 视为手动调参；env LAAP_RECALL_THRESHOLD=0 可显式关闭。
+  const envRecall = envNum('LAAP_RECALL_THRESHOLD')
+  const recallDefault = embedding.provider === 'hash' ? 0 : 0.45
   const config: LaapPluginConfig = {
     dbPath: envStr('LAAP_ZVEC_PATH') ?? raw?.dbPath ?? `${homedir()}/.dsh-laap/zvec-memory`,
     sensitivity: envNum('LAAP_SENSITIVITY') ?? raw?.sensitivity ?? 1,
@@ -74,10 +79,12 @@ export function apply(ctx: Context, raw?: Partial<LaapPluginConfig>) {
     consolidateEvery: raw?.consolidateEvery ?? 120,
     saveEvery: raw?.saveEvery ?? 20,
     noveltyThreshold: envNum('LAAP_NOVELTY_THRESHOLD') ?? raw?.noveltyThreshold ?? 0.45,
+    recallThreshold: envRecall ?? (raw?.recallThreshold && raw.recallThreshold > 0 ? raw.recallThreshold : recallDefault),
     autoEpisodic: raw?.autoEpisodic ?? true,
     embedding,
   }
   if (envNum('LAAP_NOVELTY_THRESHOLD') !== undefined) envOverrides.push(`noveltyThreshold=${config.noveltyThreshold}`)
+  if (envRecall !== undefined) envOverrides.push(`recallThreshold=${config.recallThreshold}`)
   if (envOverrides.length) log.info(`检测到环境变量覆写：${envOverrides.join('，')}（.env/环境变量优先级高于 patch 配置）`)
 
   // ── 嵌入提供者选择 ─────────────────────────────────────────────
@@ -97,11 +104,13 @@ export function apply(ctx: Context, raw?: Partial<LaapPluginConfig>) {
       dim = config.embedding.dimension
     }
   } else if (config.embedding.provider === 'ollama') {
-    // 本地 Ollama：OpenAI 兼容 /v1/embeddings，无需 API key；需先 ollama pull nomic-embed-text
+    // 本地 Ollama：OpenAI 兼容 /v1/embeddings，无需 API key。
+    // 中文场景用 bge-m3（ollama pull bge-m3，1024 维）；nomic-embed-text 仅英文可用
+    // （中文嵌入空间坍缩，详见 test/embed-ab.ts A/B 实测）。
     const baseUrl = config.embedding.baseUrl || 'http://localhost:11434/v1'
     const model = config.embedding.model && config.embedding.model !== 'dsha256'
       ? config.embedding.model
-      : 'nomic-embed-text'
+      : 'bge-m3'
     embed = openaiEmbed({
       baseUrl,
       model,
@@ -111,7 +120,7 @@ export function apply(ctx: Context, raw?: Partial<LaapPluginConfig>) {
     dim = config.embedding.dimension
     ctx.logger('laap').info(`嵌入 provider=ollama（${baseUrl}/${model}，${dim} 维）`)
     if (dim === HASH_DIM) {
-      ctx.logger('laap').warn(`嵌入 provider=ollama 但 dimension=${dim}（hash 默认值）：nomic-embed-text 实际输出 768 维，维度不匹配会导致写入失败，请在配置中设置 dimension: 768 并清空旧库目录重建`)
+      ctx.logger('laap').warn(`嵌入 provider=ollama 但 dimension=${dim}（hash 默认值 256）：与模型实际输出维度不匹配会导致写入失败——bge-m3 设 1024、nomic-embed-text 设 768，并清空旧 zvec 库目录重建`)
     }
   }
 
@@ -125,10 +134,11 @@ export function apply(ctx: Context, raw?: Partial<LaapPluginConfig>) {
     consolidateEvery: config.consolidateEvery,
     saveEvery: config.saveEvery,
     noveltyThreshold: config.noveltyThreshold,
+    recallThreshold: config.recallThreshold,
     autoEpisodic: config.autoEpisodic,
     embed,
     embedDim: dim,
   })
-  ctx.logger('laap').info(`意识内核已启动（zvec: ${config.dbPath}｜嵌入: ${config.embedding.provider}${config.embedding.provider === 'hash' ? '' : `/${config.embedding.model}`}）`)
+  ctx.logger('laap').info(`意识内核已启动（zvec: ${config.dbPath}｜嵌入: ${config.embedding.provider}${config.embedding.provider === 'hash' ? '' : `/${config.embedding.model}`}｜召回闸门: ${config.recallThreshold > 0 ? config.recallThreshold : '关'}）`)
 }
 

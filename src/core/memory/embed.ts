@@ -7,6 +7,10 @@
  *    同样适用于本地 Ollama（baseUrl=http://localhost:11434/v1，无需 apiKey）
  *
  * MemoryLayer 统一按 async 使用 EmbedAsyncFn；hash 实现也包成 async 保持一致接口。
+ *
+ * 统一契约：所有嵌入实现必须返回 L2 归一化的单位向量。zvec 向量索引默认度量为
+ * 内积（IP），单位向量下点积即余弦相似度；hashEmbed 自带归一化，openaiEmbed
+ * 在出口处 l2Normalize。新增 provider 也必须遵守，否则召回分数被模长主导、区分度失效。
  */
 
 export type EmbedAsyncFn = (texts: string[]) => Promise<number[][]>
@@ -43,6 +47,12 @@ export function hashEmbedOne(text: string, dim = HASH_DIM): number[] {
 
 export const hashEmbed: EmbedAsyncFn = async (texts) => texts.map((t) => hashEmbedOne(t))
 
+/** L2 归一化为单位向量（点积即余弦） */
+export function l2Normalize(vec: number[]): number[] {
+  const norm = Math.sqrt(vec.reduce((a, b) => a + b * b, 0)) || 1
+  return vec.map((v) => v / norm)
+}
+
 export interface OpenaiEmbedOptions {
   baseUrl: string
   model: string
@@ -73,14 +83,22 @@ export function openaiEmbed(opts: OpenaiEmbedOptions): EmbedAsyncFn {
         body: JSON.stringify({
           model: opts.model,
           input: batch,
-          ...(opts.dimension && probedDim === 0 ? {} : opts.dimension ? { dimensions: opts.dimension } : {}),
+          // 显式指定维度时每个请求都带 dimensions（Matryoshka 截断，如 bge-m3 1024→512）；
+          // 未指定时不带参数、取模型原生维度
+          ...(opts.dimension ? { dimensions: opts.dimension } : {}),
         }),
       })
       if (!res.ok) throw new Error(`embedding API ${res.status}: ${(await res.text()).slice(0, 200)}`)
       const json: any = await res.json()
-      const vecs = (json.data as any[]).sort((a, b) => a.index - b.index).map((d) => d.embedding as number[])
+      // 契约：嵌入函数必须返回 L2 单位向量——zvec 默认度量为内积（IP），
+      // 归一化后点积才等于余弦；API 返回的原始向量模长不一，必须在此归一化。
+      const vecs = (json.data as any[])
+        .sort((a, b) => a.index - b.index)
+        .map((d) => l2Normalize(d.embedding as number[]))
       if (vecs.length !== batch.length) throw new Error('embedding batch length mismatch')
       if (probedDim === 0) probedDim = vecs[0].length
+      else if (vecs[0].length !== probedDim)
+        throw new Error(`embedding 维度不一致：首批 ${probedDim} 维，本批 ${vecs[0].length} 维（检查 dimensions 参数/模型）`)
       out.push(...vecs)
     }
     return out

@@ -88,7 +88,9 @@ export function apply(ctx: Context) {
     },
     output: { schema: NARRATIVE_OUT, render: (_a, v) => textRender(v) },
     async execute(args) {
-      const hits = await ctx.laap.memory.recall(args.query, { topk: args.topk ?? 5, kind: args.kind as never })
+      // 走内核内省入口 recallMemories（带相关性闸门：低于阈值的无关记忆不浮现），
+      // 不直接调 memory.recall——那条原始通道留给新异性检测/技能去重
+      const hits = await ctx.laap.recallMemories(args.query, { topk: args.topk ?? 5, kind: args.kind as never })
       ctx.laap.perceive({ type: 'memory_recall', hitScore: hits[0]?.score ?? 0, count: hits.length })
       const narrative = hits.length
         ? hits.map((h) => `[${h.kind} ${new Date(h.ts).toISOString().slice(0, 10)} ${h.score.toFixed(2)}] ${h.text}`).join('\n')

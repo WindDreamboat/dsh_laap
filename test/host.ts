@@ -17,6 +17,8 @@ import {
   restoreConsciousness,
   ConsciousnessEngine,
   MetacognitiveMonitor,
+  createKernel,
+  silentLogger,
 } from '../src/core/index.ts'
 
 const DB = `${tmpdir()}/laap-host-zvec-${Date.now()}`
@@ -46,6 +48,35 @@ const skills = ctx.laap.memory.listSkills()
 console.log('技能清单:', skills.map((s) => s.id).join(','))
 const matched = await ctx.laap.matchSkills('怎么验证心跳任务在跑？')
 console.log('技能联想:', matched[0]?.id ?? '(未命中)')
+
+// ── 内省召回相关性闸门（recallThreshold）────────────────────────────
+// ① hash provider 默认闸门关闭（hash 真目标仅 0.04~0.25，开闸会误杀）：内省入口照常返回
+const introHits = await ctx.laap.recallMemories('怎么验证心跳任务在跑？', { topk: 3 })
+console.log('hash 下召回闸门默认关闭（内省入口仍有结果）:', introHits.length > 0 ? `✔（${introHits.length} 条）` : '✘')
+// ② 高阈值独立内核（hash）：内省入口被闸门拦截返回空，但原始 memory.recall 通道
+//    （新异性检测/技能去重依赖）完全不受影响
+const GDB = `${tmpdir()}/laap-host-gate-${Date.now()}`
+const gatedKernel = createKernel(
+  { logger: silentLogger },
+  { dbPath: GDB, heartbeatMs: 0, consolidateEvery: 9999, recallThreshold: 0.99 },
+)
+await gatedKernel.memory.remember({
+  id: 'gate-doc-1',
+  kind: 'semantic',
+  text: '向量库必须放在本地磁盘，mmap 不能走网络挂载',
+  ts: Date.now(),
+  salience: 0.8,
+})
+const gatedIntro = await gatedKernel.recallMemories('向量库为什么不能放网盘？', { topk: 5 })
+const gatedRaw = await gatedKernel.memory.recall('向量库为什么不能放网盘？', { topk: 5 })
+console.log('闸门 0.99：无关/弱相关不浮现:', gatedIntro.length === 0 ? '✔（没有记忆浮现）' : `✘（仍返回 ${gatedIntro.length} 条）`)
+console.log(
+  '闸门 0.99：原始最近邻通道不受影响（新异性/去重可用）:',
+  gatedRaw.length > 0 ? `✔（rawScore ${gatedRaw[0].rawScore.toFixed(3)}）` : '✘',
+)
+gatedKernel.dispose()
+rmSync(GDB, { recursive: true, force: true })
+rmSync(statePath(GDB), { force: true })
 
 // 用较多 perceive 推进 tick 越过蒸馏周期，触发自传
 let guard = 0

@@ -6,7 +6,7 @@
  *  - 把 cordis 的 ctx.logger 适配为内核的 KernelLogger 端口并注入；
  *  - 把 cordis 的 ctx.effect 卸载钩子接到内核 dispose()（停心跳/存快照/关记忆）；
  *  - 以 ctx.laap 暴露与历史完全一致的公开面（engine/monitor/memory/restoredFrom
- *    + perceive/saveNow/learnSkill/matchSkills/report/uiSnapshot），
+ *    + perceive/saveNow/learnSkill/matchSkills/recallMemories/report/uiSnapshot），
  *    供 laap-tools / laap-hooks / laap-prompt / laap-ui-host 及第三方插件 inject 使用。
  *
  * 配置优先级与环境变量覆写逻辑在 service-plugin.ts（插件入口）处理；
@@ -68,6 +68,11 @@ export class LaapService extends Service {
 
   matchSkills(context: string, topk?: number) {
     return this.kernel.matchSkills(context, topk)
+  }
+
+  /** 内省召回（带相关性闸门；laap_recall 工具入口，阈值下记忆不浮现） */
+  recallMemories(...args: Parameters<LaapKernel['recallMemories']>) {
+    return this.kernel.recallMemories(...args)
   }
 
   report() {
