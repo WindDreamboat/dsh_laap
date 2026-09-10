@@ -103,14 +103,18 @@ export function apply(ctx: Context) {
     },
   }))
 
-  // ── laap_skill：学习/列举程序记忆 ────────────────────────────────
+  // ── laap_skill：学习/合并/列举程序记忆 ──────────────────────────
   ctx.tools.register(defineTool({
     name: 'laap_skill',
-    description: '程序记忆：把「完成某类任务的可行做法」沉淀为可复用技能（action=learn），或查看已学技能清单（action=list）。当你摸索出一条值得复用的工作流时学会它。',
+    description:
+      '程序记忆：把「完成某类任务的可行做法」沉淀为可复用技能。' +
+      'action=learn 写入新技能（同名/近义旧技能会自动追加要点）；' +
+      'action=merge 向已用 list 确认存在的同名技能追加新要点（不会新建）；' +
+      'action=list 查看已学技能清单。沉淀前先 list：有同主题技能就 merge，不要另建近义技能。',
     parameters: {
-      action: { type: 'string', enum: ['learn', 'list'], required: true, description: 'learn=写入技能，list=查看清单' },
-      name: { type: 'string', description: '技能短名（learn 必填），如「vitest断言修复」' },
-      howto: { type: 'string', description: '技能内容：可操作的步骤/要点（learn 必填）' },
+      action: { type: 'string', enum: ['learn', 'list', 'merge'], required: true, description: 'learn=写入技能，merge=向既有同名技能追加要点，list=查看清单' },
+      name: { type: 'string', description: '技能短名（learn/merge 必填），如「vitest断言修复」' },
+      howto: { type: 'string', description: '技能内容：可操作的步骤/要点（learn/merge 必填）' },
     },
     output: { schema: NARRATIVE_OUT, render: (_a, v) => textRender(v) },
     async execute(args) {
@@ -124,6 +128,17 @@ export function apply(ctx: Context) {
           return { narrative: `技能「${r.name}」与已有技能重复，已把新要点合并进去（现共 ${r.steps ?? 0} 条），程序记忆未产生重复条目。` }
         }
         return { narrative: `技能「${r.name}」与已有技能内容一致，未重复写入（仍为 ${r.steps ?? 0} 条要点）。` }
+      }
+      if (args.action === 'merge') {
+        if (!args.name || !args.howto) return { narrative: 'merge 需要 name 与 howto 两个参数' }
+        const r = await ctx.laap.mergeSkill(args.name, args.howto)
+        if (r.action === 'not_found') {
+          return { narrative: `未找到同名技能「${r.name}」，未做任何写入。若确为新技能请用 learn；若只是名称不同，先 list 核对准确名称后再 merge。` }
+        }
+        if (r.action === 'updated') {
+          return { narrative: `已把新要点合并进既有技能「${r.name}」（现共 ${r.steps ?? 0} 条要点），未产生重复条目。` }
+        }
+        return { narrative: `技能「${r.name}」已包含这些要点，未重复添加（仍为 ${r.steps ?? 0} 条要点）。` }
       }
       const skills = ctx.laap.memory.listSkills()
       return {

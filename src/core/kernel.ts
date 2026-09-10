@@ -377,22 +377,48 @@ export class LaapKernel {
       if (near) existing = { id: near.id, text: near.text }
     }
 
-    if (existing) {
-      const parsed = parseSkillText(existing.text)
-      const oldLines = parsed ? howtoLines(parsed.howto) : []
-      const seen = new Set(oldLines.map(normStep))
-      const additions = newLines.filter((l) => !seen.has(normStep(l)))
-      if (additions.length === 0) {
-        return { id: existing.id, name: trimmedName, action: 'unchanged', steps: oldLines.length }
-      }
-      const merged = [...oldLines, ...additions].slice(0, MAX_SKILL_STEPS)
-      this.memory.forget(existing.id)
-      const saved = await this.writeSkill(trimmedName, formatHowto(merged))
-      return { ...saved, action: 'updated', previousId: existing.id, steps: merged.length }
-    }
+    if (existing) return this.appendToSkill(existing, trimmedName, newLines)
 
     const saved = await this.writeSkill(trimmedName, formatHowto(newLines))
     return { ...saved, action: 'created', steps: newLines.length }
+  }
+
+  /**
+   * 显式合并（laap_skill(action=merge) 入口）：仅向**归一化同名**的既有技能
+   * 追加要点——不做语义近邻匹配、找不到不创建。模型调 merge 前已 list 确认
+   * 目标存在，故此处必须严格可预测，禁止意外并入语义近似的另一条技能。
+   */
+  async mergeSkill(
+    name: string,
+    howto: string,
+  ): Promise<{ id?: string; name: string; action: 'updated' | 'unchanged' | 'not_found'; previousId?: string; steps?: number }> {
+    const trimmedName = name.trim()
+    const existing = this.findSkillByName(trimmedName)
+    if (!existing) return { name: trimmedName, action: 'not_found' }
+    return this.appendToSkill(existing, trimmedName, howtoLines(howto))
+  }
+
+  /**
+   * 把新要点按行去重后追加进既有技能（旧要点在前、新要点在后，
+   * MAX_SKILL_STEPS 封顶），删旧写新。learnSkill 与 mergeSkill 共用，
+   * 保证两条入口的合并口径永不漂移。
+   */
+  private async appendToSkill(
+    existing: { id: string; text: string },
+    name: string,
+    newLines: string[],
+  ): Promise<{ id: string; name: string; action: 'updated' | 'unchanged'; previousId?: string; steps: number }> {
+    const parsed = parseSkillText(existing.text)
+    const oldLines = parsed ? howtoLines(parsed.howto) : []
+    const seen = new Set(oldLines.map(normStep))
+    const additions = newLines.filter((l) => !seen.has(normStep(l)))
+    if (additions.length === 0) {
+      return { id: existing.id, name, action: 'unchanged', steps: oldLines.length }
+    }
+    const merged = [...oldLines, ...additions].slice(0, MAX_SKILL_STEPS)
+    this.memory.forget(existing.id)
+    const saved = await this.writeSkill(name, formatHowto(merged))
+    return { ...saved, action: 'updated', previousId: existing.id, steps: merged.length }
   }
 
   /** 写入一条技能文档（id 为名称哈希 + 时间戳，ASCII 安全） */

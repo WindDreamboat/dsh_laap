@@ -100,12 +100,28 @@ class SkillHintQueue {
 
 export const skillHints = new SkillHintQueue()
 
+/**
+ * 「重复工作流」线索检测参数（v2.6.0 收紧，依据真实会话取证）。
+ * 旧判据（同一相邻工具对**单轮**出现 2 次）在编码任务中只会捕到 read→read、
+ * edit↔todo_write 这类所有任务都有的呼吸节奏：一晚 10 次提醒模型 0 次采纳，
+ * 且模型的忽略理由（不具备跨任务通用性）成立——信号全是噪声。
+ */
+const REPEAT_MIN_GRAM = 3          // 至少 3 元组：bigram 在编码任务中全是呼吸噪声
+const REPEAT_MIN_DISTINCT = 2      // 序列内至少 2 种工具：滤 edit→edit→edit 单工具连击
+const REPEAT_TIMES = 2             // 会话内（可跨轮）第 2 次出现才提示（程序性技能需复用证据）
+const TURN_SEQ_CAP = 200           // 单回合成功工具名流上界
+/** 记账/调度类元工具：是任务管理节奏而非领域工作流，不计入序列（实测 edit↔todo_write 是头号噪声源） */
+const META_TOOLS = new Set(['todo_write'])
+
 export function apply(ctx: Context) {
-  // 本轮（turn）内的工具行为轨迹，turn/start 重置
-  let turnFailures = new Map<string, string>()   // 工具名 → 首次错误片段
-  let turnSuccessSeq: string[] = []               // 成功工具调用序列
-  let turnBigrams = new Map<string, number>()     // 相邻工具对 → 本轮出现次数
-  let turnModelErrored = false                    // 本轮模型请求是否已出过故障（重试去重）
+  // 技能线索轨迹（会话级计数跨轮累积，session/flush 重置；序列窗口按回合切——
+  // 跨回合边界的滑动窗口会让重复工作流的「错位窗口」（如 edit→read→write 与
+  // read→write→edit）重复计数，一个模式最多炸出 3 条近义提醒，故只统计完全
+  // 落在本回合内的 n 元组，而计数与会话去重跨轮保留）
+  let sessionFailures = new Map<string, string>()   // 工具名 → 首次错误片段
+  let sessionGrams = new Map<string, number>()      // 回合内 n 元组 → 会话内出现次数
+  let turnSeq: string[] = []                        // 本回合成功工具名流（已剔 laap_/元工具）
+  let turnModelErrored = false                      // 本轮模型请求是否已出过故障（重试去重）
 
   // 用户消息：最强的社会性刺激（归属感通道）
   ctx.on('session/event', (session, event) => {
@@ -137,9 +153,8 @@ export function apply(ctx: Context) {
         break
       }
       case 'turn/start': {
-        turnFailures = new Map()
-        turnSuccessSeq = []
-        turnBigrams = new Map()
+        // 重置本回合序列窗口（计数跨轮保留）与模型故障去重
+        turnSeq = []
         turnModelErrored = false
         ctx.laap.perceive({ type: 'task_start', description: extractText((event as any).data) || '新一轮任务' })
         break
@@ -152,10 +167,14 @@ export function apply(ctx: Context) {
     }
   })
 
-  // 会话 flush（含 compaction / 退出前的持久化时机）：意识快照随之落盘
+  // 会话 flush（含 compaction / 退出前的持久化时机）：意识快照随之落盘，
+  // 技能线索轨迹同会话清空（新会话应重新积累复用证据）
   ctx.on('session/flush', () => {
     ctx.laap.saveNow()
     skillHints.resetSession()
+    sessionFailures = new Map()
+    sessionGrams = new Map()
+    turnSeq = []
   })
 
   // 行动反馈：工具执行结局直接进入状态动力学
@@ -176,28 +195,37 @@ export function apply(ctx: Context) {
 
     // ── 技能沉淀线索检测（只观察、不写库；写入由下一轮模型自己调 laap_skill）──
     if (failed) {
-      if (!turnFailures.has(exec.name)) {
-        turnFailures.set(
+      if (!sessionFailures.has(exec.name)) {
+        sessionFailures.set(
           exec.name,
           normalizeErrorMessage((result as any)?.error ?? (result as any)?.message, '执行失败', 120),
         )
       }
     } else {
-      // 线索一（ExpeL 式失败→成功对比）：同一工具本轮先失败后成功
-      const firstError = turnFailures.get(exec.name)
+      // 线索一（ExpeL 式失败→成功对比）：同会话内同工具先失败后成功——
+      // 不要求同轮：长 agent 回合中失败常隔多步才绕回来修复，限同轮整晚 0 触发
+      const firstError = sessionFailures.get(exec.name)
       if (firstError) {
-        turnFailures.delete(exec.name)
+        sessionFailures.delete(exec.name)
         skillHints.push({ kind: 'repair', key: `repair:${exec.name}`, tool: exec.name, error: firstError })
       }
-      // 线索二（复用证据）：同一相邻工具对在本轮第 2 次出现（程序性技能需重复）
-      const prev = turnSuccessSeq[turnSuccessSeq.length - 1]
-      turnSuccessSeq.push(exec.name)
-      if (prev) {
-        const pairKey = `${prev}\u2192${exec.name}`
-        const n = (turnBigrams.get(pairKey) ?? 0) + 1
-        turnBigrams.set(pairKey, n)
-        if (n === 2) {
-          skillHints.push({ kind: 'repeat', key: `repeat:${pairKey}`, sequence: [prev, exec.name] })
+      // 线索二（复用证据）：完全落在本回合内的有序 3 元组（且含 ≥2 种工具），
+      // 跨轮累计出现第 2 次才提示。元工具（todo_write）属记账节奏，剔除后再构序列。
+      if (!META_TOOLS.has(exec.name)) {
+        turnSeq.push(exec.name)
+        if (turnSeq.length > TURN_SEQ_CAP) {
+          turnSeq.splice(0, turnSeq.length - TURN_SEQ_CAP)
+        }
+        if (turnSeq.length >= REPEAT_MIN_GRAM) {
+          const gram = turnSeq.slice(-REPEAT_MIN_GRAM)
+          if (new Set(gram).size >= REPEAT_MIN_DISTINCT) {
+            const gramKey = gram.join('→')
+            const n = (sessionGrams.get(gramKey) ?? 0) + 1
+            sessionGrams.set(gramKey, n)
+            if (n === REPEAT_TIMES) {
+              skillHints.push({ kind: 'repeat', key: `repeat:${gramKey}`, sequence: gram })
+            }
+          }
         }
       }
     }
