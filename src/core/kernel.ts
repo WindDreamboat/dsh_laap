@@ -50,6 +50,11 @@ export interface LaapKernelOptions {
    * 神经嵌入（bge-m3）由适配层按实测空档（同义写法 0.79~0.95 / 异义 ≤0.72）配 0.75。
    */
   semanticDedupThreshold?: number
+  /**
+   * 情景记忆容量上界（条数；0 = 不限制，独立内核默认）。
+   * 超限按 ts 淘汰最旧；产品默认值由适配层注入（dsh 插件默认 2000）。
+   */
+  episodicCap?: number
   /** 记忆端口：缺省按 dbPath+embed 组装 zvec MemoryLayer；可注入假实现/别的后端 */
   memory?: MemoryPort
   /** 日志端口（默认 console，带 [laap] 前缀） */
@@ -112,6 +117,7 @@ export class LaapKernel {
     const dim = opts.embedDim ?? HASH_DIM
     this.memory = opts.memory ?? new MemoryLayer(opts.dbPath, embed, dim, {
       semanticDedupThreshold: opts.semanticDedupThreshold,
+      episodicCap: opts.episodicCap,
     })
     this.consolidateEvery = opts.consolidateEvery ?? 120
     this.saveEvery = opts.saveEvery ?? 20
@@ -253,10 +259,16 @@ export class LaapKernel {
     if (frame.broadcast.length > 0) {
       this.frameLog.push(frame)
       if (this.frameLog.length > this.frameLogCap) this.frameLog.shift()
-      this.memory.pushWorking(frameToNarrative(frame), {
+      // 归档门槛：只有承载真实外部交互（用户发言/行动反馈）的帧才沉淀进情景层。
+      // 纯内感受帧（心跳低语、任务状态、新异性、模型自身发言）仍进工作记忆环供
+      // 当下内省，但挤出即弃——否则稳态下每帧落库，情景层被状态流水账淹没。
+      const external = frame.broadcast.some(
+        (b) => b.channel === 'perception' || b.channel === 'action',
+      )
+      this.memory.pushWorking(frameToNarrative(frame), external ? {
         id: `frame-${frame.tick}-${Date.now()}`,
         ts: Date.now(),
-      })
+      } : undefined)
     }
     this.consolidateIfDue(frame)
     return frame
@@ -418,12 +430,17 @@ export class LaapKernel {
    * 在原始向量召回之上加相关性闸门——rawScore 低于 recallThreshold 的命中
    * 判为「没有记忆浮现」，避免把不相关记忆当成回忆结果（真实语义嵌入下，
    * 无答案查询与真目标之间存在分数空档，闸门让内核能回答「我不知道/没经历过」）。
+   * 情景层闸门更高（recallThreshold + EPISODIC_GATE_MARGIN）：帧叙事容易与查询
+   * 字面撞车（用户刚下达的指令原文被帧存档，再查同一问题即自指命中），实测
+   * 指令自指 0.54~0.55、真实经历回忆 0.63，语义闸门 0.45 上留 0.15 余量可分。
    * 新异性检测（detectNovelty，需原始最近邻距离）与技能语义去重（learnSkill，
    * 自带 SKILL_DUP_RAW 严阈值）不经此闸，直接走 memory.recall。
    */
   async recallMemories(query: string, opts: { kind?: MemoryKind; topk?: number } = {}): Promise<RecallResult[]> {
     const hits = await this.memory.recall(query, { kind: opts.kind, topk: opts.topk ?? 5 })
-    return this.recallThreshold > 0 ? hits.filter((h) => h.rawScore >= this.recallThreshold) : hits
+    if (this.recallThreshold <= 0) return hits
+    const episodicGate = Math.min(1, this.recallThreshold + EPISODIC_GATE_MARGIN)
+    return hits.filter((h) => h.rawScore >= (h.kind === 'episodic' ? episodicGate : this.recallThreshold))
   }
 
   private eventDigest(e: CognitiveEvent): string {
@@ -507,6 +524,11 @@ export class LaapKernel {
 
 /** 程序性记忆语义去重阈值（真嵌入口径：仅近乎同义改写命中；同名归一化是主路径） */
 const SKILL_DUP_RAW = 0.9
+/**
+ * 情景层内省闸门相对 recallThreshold 的余量：
+ * bge-m3 实测指令自指 0.54~0.55、真实经历 0.63（语义闸门 0.45），0.15 居中可分。
+ */
+const EPISODIC_GATE_MARGIN = 0.15
 /** 单条技能合并后的要点上限，防止无限增长 */
 const MAX_SKILL_STEPS = 12
 

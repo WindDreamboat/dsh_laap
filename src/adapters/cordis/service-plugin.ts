@@ -7,7 +7,8 @@
  * 配置优先级：环境变量（dsh 宿主自动加载启动目录与 ~/.dsh 下的 .env）
  *   > cordis.patch.yml 的 config 字段（Schema 校验，见 src/adapters/cordis/config.ts）> 内置默认值。
  * 支持的环境变量：LAAP_ZVEC_PATH / LAAP_SENSITIVITY / LAAP_HEARTBEAT_MS /
- *   LAAP_NOVELTY_THRESHOLD / LAAP_RECALL_THRESHOLD / LAAP_EMBED_PROVIDER /
+ *   LAAP_NOVELTY_THRESHOLD / LAAP_RECALL_THRESHOLD / LAAP_SEMANTIC_DEDUP_THRESHOLD /
+ *   LAAP_EPISODIC_CAP / LAAP_EMBED_PROVIDER /
  *   LAAP_EMBED_BASE_URL / LAAP_EMBED_MODEL / LAAP_EMBED_DIMENSION / LAAP_EMBED_API_KEY_ENV。
  * 仓库默认 hash 嵌入（离线 0 依赖）；本地 .env 可切换 ollama/openai 而不改仓库文件。
  */
@@ -76,6 +77,7 @@ export function apply(ctx: Context, raw?: Partial<LaapPluginConfig>) {
   // （含扩写长句）0.79~0.95、不同事实（含同域近似偏好）≤0.72 → 空档取 0.75。
   const envDedup = envNum('LAAP_SEMANTIC_DEDUP_THRESHOLD')
   const dedupDefault = embedding.provider === 'hash' ? 0.92 : 0.75
+  const envEpisodicCap = envNum('LAAP_EPISODIC_CAP')
   const config: LaapPluginConfig = {
     dbPath: envStr('LAAP_ZVEC_PATH') ?? raw?.dbPath ?? `${homedir()}/.dsh-laap/zvec-memory`,
     sensitivity: envNum('LAAP_SENSITIVITY') ?? raw?.sensitivity ?? 1,
@@ -87,12 +89,15 @@ export function apply(ctx: Context, raw?: Partial<LaapPluginConfig>) {
     // 0（schema 默认）= 未显式配置 → 按 provider 取自动口径；env 优先级最高
     semanticDedupThreshold:
       envDedup ?? (raw?.semanticDedupThreshold && raw.semanticDedupThreshold > 0 ? raw.semanticDedupThreshold : dedupDefault),
+    // 0 = 不限制（patch 可显式设 0）；schema 默认 2000；env 最高优先
+    episodicCap: envEpisodicCap ?? raw?.episodicCap ?? 2000,
     autoEpisodic: raw?.autoEpisodic ?? true,
     embedding,
   }
   if (envNum('LAAP_NOVELTY_THRESHOLD') !== undefined) envOverrides.push(`noveltyThreshold=${config.noveltyThreshold}`)
   if (envRecall !== undefined) envOverrides.push(`recallThreshold=${config.recallThreshold}`)
   if (envDedup !== undefined) envOverrides.push(`semanticDedupThreshold=${config.semanticDedupThreshold}`)
+  if (envEpisodicCap !== undefined) envOverrides.push(`episodicCap=${config.episodicCap}`)
   if (envOverrides.length) log.info(`检测到环境变量覆写：${envOverrides.join('，')}（.env/环境变量优先级高于 patch 配置）`)
 
   // ── 嵌入提供者选择 ─────────────────────────────────────────────
@@ -144,10 +149,11 @@ export function apply(ctx: Context, raw?: Partial<LaapPluginConfig>) {
     noveltyThreshold: config.noveltyThreshold,
     recallThreshold: config.recallThreshold,
     semanticDedupThreshold: config.semanticDedupThreshold,
+    episodicCap: config.episodicCap,
     autoEpisodic: config.autoEpisodic,
     embed,
     embedDim: dim,
   })
-  ctx.logger('laap').info(`意识内核已启动（zvec: ${config.dbPath}｜嵌入: ${config.embedding.provider}${config.embedding.provider === 'hash' ? '' : `/${config.embedding.model}`}｜召回闸门: ${config.recallThreshold > 0 ? config.recallThreshold : '关'}｜语义去重: ${config.semanticDedupThreshold}）`)
+  ctx.logger('laap').info(`意识内核已启动（zvec: ${config.dbPath}｜嵌入: ${config.embedding.provider}${config.embedding.provider === 'hash' ? '' : `/${config.embedding.model}`}｜召回闸门: ${config.recallThreshold > 0 ? config.recallThreshold : '关'}｜语义去重: ${config.semanticDedupThreshold}｜情景容量: ${config.episodicCap > 0 ? config.episodicCap : '不限'}）`)
 }
 

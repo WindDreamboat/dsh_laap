@@ -21,6 +21,29 @@ function extractText(data: any): string {
 }
 
 /**
+ * 把工具错误归一化为单行可读信息。
+ * dsh 工具错误可能是字符串、Error 或普通对象（{code,message}）；
+ * 直接 String(对象) 会得到 "[object Object]"，错误信息全丢。
+ */
+function normalizeErrorMessage(err: unknown, fallback: string, maxLen: number): string {
+  let msg: string
+  if (err == null) {
+    msg = fallback
+  } else if (typeof err === 'string') {
+    msg = err
+  } else if (err instanceof Error) {
+    msg = err.message
+  } else {
+    const e = err as Record<string, unknown>
+    const text = typeof e.message === 'string' && e.message
+      ? e.message
+      : (() => { try { return JSON.stringify(e) } catch { return fallback } })()
+    msg = typeof e.code === 'string' && e.code ? `${e.code}: ${text}` : text
+  }
+  return msg.replace(/\s+/g, ' ').slice(0, maxLen) || fallback
+}
+
+/**
  * 技能沉淀线索队列（一期：确定性触发 + 模型执笔）
  *
  * 研究依据（Voyager/ExpeL）：学习动作必须由主循环确定性触发，不能依赖模型
@@ -98,7 +121,13 @@ export function apply(ctx: Context) {
     }
     switch (event.type) {
       case 'user/message': {
-        const text = extractText((event as any).data)
+        const data = (event as any).data
+        // 仅真人发言作为社会性刺激：dsh 以 user 角色注入 runtime-context 快照
+        // （source.kind='plugin'，如 @deepseek-ai/dsh-system-prompt、compact 摘要）。
+        // 这些是系统上下文而非用户说话——计入归属刺激会让连接感虚高、
+        // 注入原文还会污染意识帧/情景记忆/自传蒸馏。
+        if (data?.source?.kind !== 'user') break
+        const text = extractText(data)
         ctx.laap.perceive({ type: 'user_message', text })
         break
       }
@@ -136,7 +165,7 @@ export function apply(ctx: Context) {
     const failed = (result as any)?.error != null || (result as any)?.isError === true
     ctx.laap.perceive(
       failed
-        ? { type: 'tool_error', tool: exec.name, message: String((result as any)?.error ?? '执行失败').slice(0, 200) }
+        ? { type: 'tool_error', tool: exec.name, message: normalizeErrorMessage((result as any)?.error, '执行失败', 200) }
         : { type: 'tool_success', tool: exec.name },
     )
     // L1 元认知同步记录（不占模型自觉，系统替它监控）
@@ -150,7 +179,7 @@ export function apply(ctx: Context) {
       if (!turnFailures.has(exec.name)) {
         turnFailures.set(
           exec.name,
-          String((result as any)?.error ?? (result as any)?.message ?? '执行失败').replace(/\s+/g, ' ').slice(0, 120),
+          normalizeErrorMessage((result as any)?.error ?? (result as any)?.message, '执行失败', 120),
         )
       }
     } else {
